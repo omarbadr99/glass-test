@@ -11,7 +11,8 @@ import { EffectComposer, Bloom } from '@react-three/postprocessing'
 import { useControls } from 'leva'
 import * as THREE from 'three'
 
-const FONT_URL = '/fonts/helvetiker_bold.typeface.json'
+// Respect Vite's base path so the font also loads from a Pages subpath.
+const FONT_URL = `${import.meta.env.BASE_URL}fonts/helvetiker_bold.typeface.json`
 
 function Scene() {
   const group = useRef()
