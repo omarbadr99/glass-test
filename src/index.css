@@ -1,3 +1,12 @@
+:root {
+  --bg: #f7f6f2;
+  --ink: #16161a;
+  --line: #d9d6cd;
+  --soft: #8a877e;
+  --check-a: #eceae3;
+  --check-b: #f7f6f2;
+}
+
 * {
   margin: 0;
   padding: 0;
@@ -8,7 +17,270 @@ html,
 body,
 #root {
   width: 100%;
-  height: 100%;
+  min-height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.app {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 28px 24px 64px;
+}
+
+header h1 {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+header p {
+  color: var(--soft);
+  max-width: 60ch;
+  margin-top: 4px;
+}
+
+main {
+  display: flex;
+  gap: 32px;
+  margin-top: 24px;
+  align-items: flex-start;
+}
+
+/* ---- stage ---- */
+
+.stage {
+  flex: 1;
+  min-width: 0;
+}
+
+.viewport {
+  border: 1px solid var(--line);
+  background-image: conic-gradient(
+    var(--check-a) 90deg,
+    var(--check-b) 90deg 180deg,
+    var(--check-a) 180deg 270deg,
+    var(--check-b) 270deg
+  );
+  background-size: 28px 28px;
+}
+
+.viewport canvas {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1;
+}
+
+.filmstrip {
+  margin-top: 16px;
+  background: #e7e5de;
+  padding: 16px 10px;
+  position: relative;
   overflow: hidden;
-  background: #000;
+}
+
+.filmstrip::before,
+.filmstrip::after {
+  content: '';
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  height: 7px;
+  background: repeating-linear-gradient(
+    90deg,
+    var(--bg) 0 9px,
+    transparent 9px 22px
+  );
+}
+
+.filmstrip::before {
+  top: 4px;
+}
+
+.filmstrip::after {
+  bottom: 4px;
+}
+
+.filmstrip img {
+  display: block;
+  height: 72px;
+  max-width: 100%;
+  object-fit: cover;
+  object-position: left;
+  image-rendering: auto;
+}
+
+.strip-empty {
+  height: 72px;
+}
+
+.caption {
+  color: var(--soft);
+  margin-top: 8px;
+}
+
+/* ---- panel ---- */
+
+.panel {
+  width: 340px;
+  flex-shrink: 0;
+}
+
+.section {
+  border-top: 1px solid var(--line);
+  padding: 14px 0 16px;
+}
+
+.section h2 {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  margin-bottom: 10px;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chips + .chips {
+  margin-top: 8px;
+}
+
+.chip {
+  font: inherit;
+  font-size: 12px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink);
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.chip:hover {
+  border-color: var(--ink);
+}
+
+.chip.active {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--bg);
+}
+
+.chip.ghost {
+  border-style: dashed;
+  color: var(--soft);
+}
+
+.error {
+  color: #b3261e;
+  margin-top: 8px;
+}
+
+.slider {
+  margin-top: 14px;
+}
+
+.slider-head {
+  display: flex;
+  justify-content: space-between;
+  color: var(--soft);
+  margin-bottom: 6px;
+}
+
+input[type='range'] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 3px;
+  background: var(--line);
+  outline: none;
+  cursor: pointer;
+}
+
+input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--ink);
+}
+
+input[type='range']::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border: none;
+  border-radius: 50%;
+  background: var(--ink);
+}
+
+.motion-row {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  margin-bottom: 10px;
+}
+
+.motion-label {
+  color: var(--soft);
+  width: 52px;
+  flex-shrink: 0;
+}
+
+.bake {
+  font: inherit;
+  width: 100%;
+  margin-top: 4px;
+  padding: 10px;
+  background: var(--ink);
+  color: var(--bg);
+  border: none;
+  cursor: pointer;
+  letter-spacing: 0.04em;
+}
+
+.bake:hover {
+  opacity: 0.85;
+}
+
+.bake:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.result {
+  margin-top: 18px;
+}
+
+.result .hint {
+  color: var(--soft);
+  margin-bottom: 10px;
+}
+
+.result pre {
+  border: 1px solid var(--line);
+  background: #f0efe9;
+  padding: 10px;
+  font-size: 11px;
+  overflow-x: auto;
+  margin-bottom: 10px;
+}
+
+@media (max-width: 860px) {
+  main {
+    flex-direction: column;
+  }
+
+  .panel {
+    width: 100%;
+  }
 }

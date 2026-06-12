@@ -1,153 +1,310 @@
-import { Suspense, useRef } from 'react'
-import { Canvas, useFrame } from '@react-three/fiber'
-import {
-  Center,
-  Text3D,
-  Environment,
-  Lightformer,
-  OrbitControls,
-  MeshTransmissionMaterial,
-} from '@react-three/drei'
-import { EffectComposer, Bloom } from '@react-three/postprocessing'
-import { useControls } from 'leva'
+import { useEffect, useRef, useState } from 'react'
+import { Engine, MATERIAL_NAMES, SPIN_MOTIONS, OBJECT_MOTIONS, LIGHT_MOTIONS } from './engine'
+import { PRESETS, shapesFromSVG } from './shapes'
 
-// Respect Vite's base path so the font also loads from a Pages subpath.
-const FONT_URL = `${import.meta.env.BASE_URL}fonts/helvetiker_bold.typeface.json`
+const LOOP_SECONDS = 2
 
-function Scene() {
-  const group = useRef()
+function cssSnippet(frames, size) {
+  const total = frames * size
+  return `.loop {
+  width: ${size}px;
+  height: ${size}px;
+  background: url("strip.png") 0 0 / ${total}px ${size}px no-repeat;
+  animation: loop ${LOOP_SECONDS}s steps(${frames}) infinite;
+}
+@keyframes loop {
+  to { background-position: -${total}px 0; }
+}`
+}
 
-  // Tunable parameters via leva.
-  const text = useControls('Text', {
-    label: { value: 'designer' },
-    size: { value: 1.25, min: 0.3, max: 3, step: 0.05 },
-    depth: { value: 0.3, min: 0.05, max: 1.5, step: 0.05 },
-  })
+function downloadCanvas(canvas, filename, done) {
+  canvas.toBlob((blob) => {
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    a.click()
+    setTimeout(() => URL.revokeObjectURL(url), 10_000)
+    done?.(blob)
+  }, 'image/png')
+}
 
-  const rotation = useControls('Motion', {
-    speed: { value: 0.12, min: 0, max: 1.5, step: 0.01 },
-  })
-
-  // Liquid-glass parameters. Defaults tuned for a clear, transmissive pill
-  // that refracts and disperses the white text sitting inside it.
-  const glass = useControls('Liquid Glass', {
-    transmission: { value: 1, min: 0, max: 1, step: 0.01 },
-    thickness: { value: 1.6, min: 0, max: 5, step: 0.05 },
-    roughness: { value: 0, min: 0, max: 1, step: 0.01 },
-    ior: { value: 1.45, min: 1, max: 2.333, step: 0.01 },
-    chromaticAberration: { value: 0.85, min: 0, max: 2, step: 0.01 },
-    anisotropicBlur: { value: 0.1, min: 0, max: 1, step: 0.01 },
-    distortion: { value: 0.5, min: 0, max: 1, step: 0.01 },
-    distortionScale: { value: 0.5, min: 0, max: 1, step: 0.01 },
-    temporalDistortion: { value: 0.2, min: 0, max: 1, step: 0.01 },
-    attenuationDistance: { value: 4, min: 0.1, max: 10, step: 0.1 },
-    envIntensity: { value: 0.6, min: 0, max: 3, step: 0.05 },
-  })
-
-  // Slow, subtle rotation of the whole assembly.
-  useFrame((state, delta) => {
-    if (group.current) {
-      group.current.rotation.y += delta * rotation.speed
-    }
-  })
-
+function Chips({ options, value, onChange }) {
   return (
-    <group ref={group}>
-      {/* Bright white text sitting INSIDE the pill. meshBasicMaterial keeps it
-          uniformly white so it reads clearly once refracted through the glass. */}
-      <Center>
-        <Text3D
-          font={FONT_URL}
-          size={text.size}
-          height={text.depth}
-          bevelEnabled
-          bevelSize={0.015}
-          bevelThickness={0.02}
-          bevelSegments={3}
-          curveSegments={12}
+    <div className="chips">
+      {options.map((o) => (
+        <button
+          key={o}
+          className={`chip${o === value ? ' active' : ''}`}
+          onClick={() => onChange(o)}
         >
-          {text.label}
-          <meshBasicMaterial color="#ffffff" toneMapped={false} />
-        </Text3D>
-      </Center>
+          {o}
+        </button>
+      ))}
+    </div>
+  )
+}
 
-      {/* Glass pill / capsule enclosing the text. backside refraction makes the
-          glass bend the text behind it like a real thick lens. */}
-      <mesh rotation={[0, 0, Math.PI / 2]}>
-        <capsuleGeometry args={[1.45, 5.2, 64, 128]} />
-        <MeshTransmissionMaterial
-          backside
-          backsideThickness={glass.thickness}
-          samples={16}
-          resolution={2048}
-          backsideResolution={1024}
-          transmission={glass.transmission}
-          thickness={glass.thickness}
-          roughness={glass.roughness}
-          ior={glass.ior}
-          chromaticAberration={glass.chromaticAberration}
-          anisotropicBlur={glass.anisotropicBlur}
-          distortion={glass.distortion}
-          distortionScale={glass.distortionScale}
-          temporalDistortion={glass.temporalDistortion}
-          attenuationDistance={glass.attenuationDistance}
-          attenuationColor="#ffffff"
-          color="#ffffff"
-          envMapIntensity={glass.envIntensity}
-        />
-      </mesh>
-    </group>
+function Slider({ label, value, display, min, max, step, onChange }) {
+  return (
+    <div className="slider">
+      <div className="slider-head">
+        <span>{label}</span>
+        <span>{display ?? value}</span>
+      </div>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+      />
+    </div>
   )
 }
 
 export default function App() {
+  const canvasRef = useRef(null)
+  const viewportRef = useRef(null)
+  const fileRef = useRef(null)
+  const [engine, setEngine] = useState(null)
+
+  const [subject, setSubject] = useState('star')
+  const [upload, setUpload] = useState(null) // { name, shapes }
+  const [uploadError, setUploadError] = useState('')
+  const [material, setMaterial] = useState('chrome')
+  const [depth, setDepth] = useState(0.22)
+  const [bevel, setBevel] = useState(0.04)
+  const [spin, setSpin] = useState('turntable')
+  const [objectMotion, setObjectMotion] = useState('none')
+  const [lightMotion, setLightMotion] = useState('none')
+  const [frames, setFrames] = useState(48)
+  const [frameSize, setFrameSize] = useState(256)
+
+  const [preview, setPreview] = useState(null) // { url, kb }
+  const [baked, setBaked] = useState(null) // { kb, width }
+  const [copied, setCopied] = useState(false)
+
+  // Create the engine, size it to its container, run the preview loop.
+  useEffect(() => {
+    const eng = new Engine(canvasRef.current)
+    const fit = () => eng.setViewSize(Math.min(viewportRef.current.clientWidth, 720))
+    fit()
+    const ro = new ResizeObserver(fit)
+    ro.observe(viewportRef.current)
+
+    let raf
+    const tick = (now) => {
+      eng.render((now / (LOOP_SECONDS * 1000)) % 1)
+      raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    setEngine(eng)
+    return () => {
+      cancelAnimationFrame(raf)
+      ro.disconnect()
+      eng.dispose()
+      setEngine(null)
+    }
+  }, [])
+
+  // Keep the scene in sync with the controls.
+  useEffect(() => {
+    if (!engine) return
+    if (subject === 'upload' && upload) engine.setShapes(upload.shapes, false)
+    else {
+      const preset = PRESETS.find((p) => p.key === subject) ?? PRESETS[0]
+      engine.setShapes(preset.make(), true)
+    }
+  }, [engine, subject, upload])
+
+  useEffect(() => {
+    if (!engine) return
+    engine.applySettings({ material, depth, bevel, spin, object: objectMotion, light: lightMotion })
+  }, [engine, material, depth, bevel, spin, objectMotion, lightMotion])
+
+  // Re-bake the low-res preview strip whenever anything changes (debounced).
+  useEffect(() => {
+    if (!engine) return
+    const id = setTimeout(() => {
+      const strip = engine.bakeStrip(frames, 96)
+      strip.toBlob((blob) => {
+        setPreview((prev) => {
+          if (prev) URL.revokeObjectURL(prev.url)
+          return { url: URL.createObjectURL(blob), kb: Math.max(1, Math.round(blob.size / 1024)) }
+        })
+      }, 'image/png')
+    }, 350)
+    return () => clearTimeout(id)
+  }, [engine, subject, upload, material, depth, bevel, spin, objectMotion, lightMotion, frames])
+
+  const onUpload = (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = () => {
+      try {
+        const { shapes } = shapesFromSVG(reader.result)
+        setUpload({ name: file.name, shapes })
+        setSubject('upload')
+        setUploadError('')
+      } catch (err) {
+        setUploadError(err.message)
+      }
+    }
+    reader.readAsText(file)
+    e.target.value = ''
+  }
+
+  const bake = () => {
+    const strip = engine.bakeStrip(frames, frameSize)
+    downloadCanvas(strip, 'strip.png', (blob) => {
+      setBaked({ kb: Math.round(blob.size / 1024), width: frames * frameSize })
+    })
+    downloadCanvas(engine.bakePoster(1024), 'poster.png')
+  }
+
+  const copyCss = () => {
+    navigator.clipboard.writeText(cssSnippet(frames, frameSize)).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    })
+  }
+
   return (
-    <Canvas
-      camera={{ position: [0, 0, 9], fov: 35 }}
-      gl={{ antialias: true }}
-      dpr={[1, 2]}
-    >
-      <color attach="background" args={['#000000']} />
+    <div className="app">
+      <header>
+        <h1>flipbook</h1>
+        <p>
+          stage an object, give it a finish and a motion — bake it into a strip of frames any
+          website can play.
+        </p>
+      </header>
 
-      <ambientLight intensity={0.2} />
+      <main>
+        <section className="stage">
+          <div className="viewport" ref={viewportRef}>
+            <canvas ref={canvasRef} />
+          </div>
+          <div className="filmstrip">
+            {preview ? (
+              <img src={preview.url} alt="baked frame strip preview" />
+            ) : (
+              <div className="strip-empty" />
+            )}
+          </div>
+          <p className="caption">
+            {preview ? `preview · ${frames} frames · 96px · ${preview.kb}KB` : 'baking preview…'}
+          </p>
+        </section>
 
-      <Suspense fallback={null}>
-        <Scene />
-        {/* Controlled studio lighting via Lightformers rather than a bright HDRI,
-            so the glass gets clean soft highlights instead of a mirror-chrome look.
-            Background stays black. */}
-        <Environment resolution={256}>
-          <Lightformer
-            intensity={2}
-            position={[0, 4, 4]}
-            scale={[12, 6, 1]}
-            color="#ffffff"
-          />
-          <Lightformer
-            intensity={1.2}
-            position={[-5, 1, 2]}
-            scale={[6, 8, 1]}
-            color="#ffffff"
-          />
-          <Lightformer
-            intensity={1}
-            position={[5, -2, -3]}
-            scale={[8, 6, 1]}
-            color="#ffffff"
-          />
-        </Environment>
-      </Suspense>
+        <aside className="panel">
+          <div className="section">
+            <h2>subject</h2>
+            <div className="chips">
+              {PRESETS.map((p) => (
+                <button
+                  key={p.key}
+                  className={`chip${subject === p.key ? ' active' : ''}`}
+                  onClick={() => setSubject(p.key)}
+                >
+                  {p.key}
+                </button>
+              ))}
+            </div>
+            <div className="chips">
+              <button className="chip ghost" onClick={() => fileRef.current.click()}>
+                {upload && subject === 'upload' ? `svg: ${upload.name}` : 'upload svg'}
+              </button>
+              {upload && subject !== 'upload' && (
+                <button className="chip" onClick={() => setSubject('upload')}>
+                  svg: {upload.name}
+                </button>
+              )}
+            </div>
+            {uploadError && <p className="error">{uploadError}</p>}
+            <input
+              ref={fileRef}
+              type="file"
+              accept=".svg,image/svg+xml"
+              hidden
+              onChange={onUpload}
+            />
+          </div>
 
-      <EffectComposer>
-        <Bloom
-          luminanceThreshold={0.9}
-          luminanceSmoothing={0.3}
-          intensity={0.35}
-          mipmapBlur
-        />
-      </EffectComposer>
+          <div className="section">
+            <h2>material</h2>
+            <Chips options={MATERIAL_NAMES} value={material} onChange={setMaterial} />
+            <Slider
+              label="depth"
+              value={depth}
+              display={depth.toFixed(2)}
+              min={0.04}
+              max={0.6}
+              step={0.01}
+              onChange={setDepth}
+            />
+            <Slider
+              label="bevel"
+              value={bevel}
+              display={bevel.toFixed(3)}
+              min={0}
+              max={0.12}
+              step={0.005}
+              onChange={setBevel}
+            />
+          </div>
 
-      <OrbitControls enablePan={false} />
-    </Canvas>
+          <div className="section">
+            <h2>motion</h2>
+            <div className="motion-row">
+              <span className="motion-label">spin</span>
+              <Chips options={SPIN_MOTIONS} value={spin} onChange={setSpin} />
+            </div>
+            <div className="motion-row">
+              <span className="motion-label">object</span>
+              <Chips options={OBJECT_MOTIONS} value={objectMotion} onChange={setObjectMotion} />
+            </div>
+            <div className="motion-row">
+              <span className="motion-label">light</span>
+              <Chips options={LIGHT_MOTIONS} value={lightMotion} onChange={setLightMotion} />
+            </div>
+          </div>
+
+          <div className="section">
+            <h2>film</h2>
+            <Slider label="frames" value={frames} min={8} max={96} step={4} onChange={setFrames} />
+            <Slider
+              label="frame size"
+              value={frameSize}
+              display={`${frameSize}px`}
+              min={64}
+              max={512}
+              step={32}
+              onChange={setFrameSize}
+            />
+          </div>
+
+          <button className="bake" onClick={bake} disabled={!engine}>
+            bake strip + poster
+          </button>
+
+          {baked && (
+            <div className="section result">
+              <h2>baked</h2>
+              <p className="hint">
+                downloaded strip.png ({baked.width}×{frameSize} · {baked.kb}KB) and poster.png. drop
+                them next to your html and paste this css:
+              </p>
+              <pre>{cssSnippet(frames, frameSize)}</pre>
+              <button className="chip" onClick={copyCss}>
+                {copied ? 'copied' : 'copy css'}
+              </button>
+            </div>
+          )}
+        </aside>
+      </main>
+    </div>
   )
 }

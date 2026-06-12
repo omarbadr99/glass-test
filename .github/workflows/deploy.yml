@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - main
-      - claude/intelligent-feynman-9pljex
+      - claude/loving-johnson-8pf75q
   workflow_dispatch:
 
 permissions:
