@@ -1,30 +1,54 @@
-import { useEffect, useRef, useState } from 'react'
-import { Engine, MATERIAL_NAMES, SPIN_MOTIONS, OBJECT_MOTIONS, LIGHT_MOTIONS } from './engine'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import {
+  Engine,
+  MATERIAL_NAMES,
+  SPIN_MOTIONS,
+  OBJECT_MOTIONS,
+  LIGHT_MOTIONS,
+  BACKGROUNDS,
+  computeGrid,
+} from './engine'
 import { PRESETS, shapesFromSVG } from './shapes'
+import { supportedVideoTypes, recordVideo, downloadBlob } from './export'
 
 const LOOP_SECONDS = 2
 
-function cssSnippet(frames, size) {
-  const total = frames * size
-  return `.loop {
+// CSS that plays the baked sheet. A single row uses one steps() animation; a
+// wrapped grid steps across columns each row and advances rows over the loop.
+function cssSnippet(frames, size, cols, rows) {
+  const sheetW = cols * size
+  const sheetH = rows * size
+  if (rows === 1) {
+    return `.loop {
   width: ${size}px;
   height: ${size}px;
-  background: url("strip.png") 0 0 / ${total}px ${size}px no-repeat;
+  background: url("sheet.png") 0 0 / ${sheetW}px ${size}px no-repeat;
   animation: loop ${LOOP_SECONDS}s steps(${frames}) infinite;
 }
 @keyframes loop {
-  to { background-position: -${total}px 0; }
+  to { background-position: -${sheetW}px 0; }
+}`
+  }
+  const rowSeconds = ((LOOP_SECONDS * cols) / frames).toFixed(3)
+  return `.loop {
+  width: ${size}px;
+  height: ${size}px;
+  background: url("sheet.png") 0 0 / ${sheetW}px ${sheetH}px no-repeat;
+  animation:
+    loop-x ${rowSeconds}s steps(${cols}) infinite,
+    loop-y ${LOOP_SECONDS}s steps(${rows}) infinite;
+}
+@keyframes loop-x {
+  to { background-position-x: -${sheetW}px; }
+}
+@keyframes loop-y {
+  to { background-position-y: -${sheetH}px; }
 }`
 }
 
 function downloadCanvas(canvas, filename, done) {
   canvas.toBlob((blob) => {
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = filename
-    a.click()
-    setTimeout(() => URL.revokeObjectURL(url), 10_000)
+    downloadBlob(blob, filename)
     done?.(blob)
   }, 'image/png')
 }
@@ -68,6 +92,7 @@ export default function App() {
   const canvasRef = useRef(null)
   const viewportRef = useRef(null)
   const fileRef = useRef(null)
+  const pausedRef = useRef(false)
   const [engine, setEngine] = useState(null)
 
   const [subject, setSubject] = useState('star')
@@ -76,14 +101,22 @@ export default function App() {
   const [material, setMaterial] = useState('chrome')
   const [depth, setDepth] = useState(0.22)
   const [bevel, setBevel] = useState(0.04)
+  const [background, setBackground] = useState(BACKGROUNDS[0])
   const [spin, setSpin] = useState('turntable')
   const [objectMotion, setObjectMotion] = useState('none')
   const [lightMotion, setLightMotion] = useState('none')
   const [frames, setFrames] = useState(48)
   const [frameSize, setFrameSize] = useState(256)
 
+  // Available share formats: the CSS-playable PNG sheet plus whatever video
+  // containers this browser can actually encode (mp4 preferred, webm fallback).
+  const videoTypes = useMemo(() => supportedVideoTypes(), [])
+  const formats = useMemo(() => ['sheet', ...videoTypes.map((v) => v.format)], [videoTypes])
+  const [format, setFormat] = useState('sheet')
+
   const [preview, setPreview] = useState(null) // { url, kb }
-  const [baked, setBaked] = useState(null) // { kb, width }
+  const [baked, setBaked] = useState(null) // { format, ... }
+  const [busy, setBusy] = useState(false)
   const [copied, setCopied] = useState(false)
 
   // Create the engine, size it to its container, run the preview loop.
@@ -96,7 +129,9 @@ export default function App() {
 
     let raf
     const tick = (now) => {
-      eng.render((now / (LOOP_SECONDS * 1000)) % 1)
+      // Paused while a video records, so the recorder captures only the
+      // dedicated export frames and not the live preview poses.
+      if (!pausedRef.current) eng.render((now / (LOOP_SECONDS * 1000)) % 1)
       raf = requestAnimationFrame(tick)
     }
     raf = requestAnimationFrame(tick)
@@ -121,8 +156,16 @@ export default function App() {
 
   useEffect(() => {
     if (!engine) return
-    engine.applySettings({ material, depth, bevel, spin, object: objectMotion, light: lightMotion })
-  }, [engine, material, depth, bevel, spin, objectMotion, lightMotion])
+    engine.applySettings({
+      material,
+      depth,
+      bevel,
+      background,
+      spin,
+      object: objectMotion,
+      light: lightMotion,
+    })
+  }, [engine, material, depth, bevel, background, spin, objectMotion, lightMotion])
 
   // Re-bake the low-res preview strip whenever anything changes (debounced).
   useEffect(() => {
@@ -137,7 +180,19 @@ export default function App() {
       }, 'image/png')
     }, 350)
     return () => clearTimeout(id)
-  }, [engine, subject, upload, material, depth, bevel, spin, objectMotion, lightMotion, frames])
+  }, [
+    engine,
+    subject,
+    upload,
+    material,
+    depth,
+    bevel,
+    background,
+    spin,
+    objectMotion,
+    lightMotion,
+    frames,
+  ])
 
   const onUpload = (e) => {
     const file = e.target.files?.[0]
@@ -157,28 +212,73 @@ export default function App() {
     e.target.value = ''
   }
 
-  const bake = () => {
-    const strip = engine.bakeStrip(frames, frameSize)
-    downloadCanvas(strip, 'strip.png', (blob) => {
-      setBaked({ kb: Math.round(blob.size / 1024), width: frames * frameSize })
+  const bakeSheet = () => {
+    const { canvas, cols, rows } = engine.bakeSheet(frames, frameSize)
+    downloadCanvas(canvas, 'sheet.png', (blob) => {
+      setBaked({
+        format: 'sheet',
+        kb: Math.round(blob.size / 1024),
+        width: canvas.width,
+        height: canvas.height,
+        cols,
+        rows,
+      })
     })
     downloadCanvas(engine.bakePoster(1024), 'poster.png')
   }
 
+  const bakeVideo = async () => {
+    const type = videoTypes.find((v) => v.format === format)
+    if (!type) return
+    setBusy(true)
+    pausedRef.current = true
+    try {
+      const blob = await recordVideo(engine, {
+        size: frameSize,
+        durationMs: LOOP_SECONDS * 1000,
+        mime: type.mime,
+        render: (t) => engine.render(t, true),
+      })
+      downloadBlob(blob, `loop.${type.format}`)
+      setBaked({ format: 'video', ext: type.format, kb: Math.round(blob.size / 1024) })
+    } catch (err) {
+      setBaked({ format: 'error', message: err.message })
+    } finally {
+      pausedRef.current = false
+      if (engine.viewSize) engine.setViewSize(engine.viewSize)
+      setBusy(false)
+    }
+  }
+
+  const bake = () => {
+    if (busy) return
+    if (format === 'sheet') bakeSheet()
+    else bakeVideo()
+  }
+
+  const grid = computeGrid(frames, frameSize)
   const copyCss = () => {
-    navigator.clipboard.writeText(cssSnippet(frames, frameSize)).then(() => {
+    navigator.clipboard.writeText(cssSnippet(frames, frameSize, grid.cols, grid.rows)).then(() => {
       setCopied(true)
       setTimeout(() => setCopied(false), 1500)
     })
   }
+
+  const bakeLabel = busy
+    ? format === 'sheet'
+      ? 'baking…'
+      : 'recording…'
+    : format === 'sheet'
+      ? 'bake sheet + poster'
+      : `bake ${format}`
 
   return (
     <div className="app">
       <header>
         <h1>flipbook</h1>
         <p>
-          stage an object, give it a finish and a motion — bake it into a strip of frames any
-          website can play.
+          stage an object, give it a finish and a motion — bake it into a strip of frames, a video,
+          or (soon) a gif any website can play.
         </p>
       </header>
 
@@ -257,6 +357,29 @@ export default function App() {
           </div>
 
           <div className="section">
+            <h2>background</h2>
+            <div className="swatches">
+              {BACKGROUNDS.map((c) => (
+                <button
+                  key={c}
+                  className={`swatch${background === c ? ' active' : ''}`}
+                  style={{ background: c }}
+                  onClick={() => setBackground(c)}
+                  aria-label={`background ${c}`}
+                />
+              ))}
+              <label className="swatch picker" style={{ background }}>
+                <input
+                  type="color"
+                  value={background}
+                  onChange={(e) => setBackground(e.target.value)}
+                />
+              </label>
+            </div>
+            <p className="hint">baked into every export — exports are never transparent.</p>
+          </div>
+
+          <div className="section">
             <h2>motion</h2>
             <div className="motion-row">
               <span className="motion-label">spin</span>
@@ -286,21 +409,50 @@ export default function App() {
             />
           </div>
 
-          <button className="bake" onClick={bake} disabled={!engine}>
-            bake strip + poster
+          <div className="section">
+            <h2>share as</h2>
+            <Chips options={formats} value={format} onChange={setFormat} />
+            <p className="hint">
+              {format === 'sheet'
+                ? grid.rows > 1
+                  ? `sharp & CSS-playable · ${grid.cols}×${grid.rows} grid sheet`
+                  : 'sharp & CSS-playable · single-row strip'
+                : 'smallest & smooth · best for sharing'}
+            </p>
+          </div>
+
+          <button className="bake" onClick={bake} disabled={!engine || busy}>
+            {bakeLabel}
           </button>
 
-          {baked && (
+          {baked?.format === 'sheet' && (
             <div className="section result">
               <h2>baked</h2>
               <p className="hint">
-                downloaded strip.png ({baked.width}×{frameSize} · {baked.kb}KB) and poster.png. drop
-                them next to your html and paste this css:
+                downloaded sheet.png ({baked.width}×{baked.height} · {baked.kb}KB) and poster.png.
+                drop them next to your html and paste this css:
               </p>
-              <pre>{cssSnippet(frames, frameSize)}</pre>
+              <pre>{cssSnippet(frames, frameSize, baked.cols, baked.rows)}</pre>
               <button className="chip" onClick={copyCss}>
                 {copied ? 'copied' : 'copy css'}
               </button>
+            </div>
+          )}
+
+          {baked?.format === 'video' && (
+            <div className="section result">
+              <h2>baked</h2>
+              <p className="hint">
+                downloaded loop.{baked.ext} ({baked.kb}KB) — a {LOOP_SECONDS}s seamless loop ready
+                to post anywhere.
+              </p>
+            </div>
+          )}
+
+          {baked?.format === 'error' && (
+            <div className="section result">
+              <h2>export failed</h2>
+              <p className="error">{baked.message}</p>
             </div>
           )}
         </aside>

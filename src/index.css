@@ -185,6 +185,50 @@ main {
   margin-top: 8px;
 }
 
+.hint {
+  color: var(--soft);
+  margin-top: 8px;
+}
+
+.swatches {
+  display: flex;
+  gap: 8px;
+}
+
+.swatch {
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  cursor: pointer;
+  padding: 0;
+}
+
+.swatch:hover {
+  border-color: var(--ink);
+}
+
+.swatch.active {
+  box-shadow: 0 0 0 2px var(--bg), 0 0 0 3px var(--ink);
+}
+
+/* Shows the current custom color; clicking opens the native picker. */
+.swatch.picker {
+  position: relative;
+  overflow: hidden;
+}
+
+.swatch.picker input[type='color'] {
+  position: absolute;
+  inset: -4px;
+  width: calc(100% + 8px);
+  height: calc(100% + 8px);
+  opacity: 0;
+  cursor: pointer;
+  border: none;
+  padding: 0;
+}
+
 .slider {
   margin-top: 14px;
 }

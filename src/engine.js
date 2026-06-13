@@ -18,6 +18,33 @@ export const SPIN_MOTIONS = ['turntable', 'swivel', 'none']
 export const OBJECT_MOTIONS = ['none', 'sway', 'float', 'nod', 'flip', 'pop']
 export const LIGHT_MOTIONS = ['none', 'pan', 'glint', 'flicker']
 
+// A few backdrop swatches plus a free color picker in the UI. Exports are
+// always composited onto an opaque background — glossy metals never read right
+// on a transparent canvas, and GIF/video can't carry alpha anyway.
+export const BACKGROUNDS = ['#101014', '#f7f6f2', '#0a1a2f', '#1d1208', '#123524']
+
+// Widest a single film strip may get before we wrap frames into a grid sheet.
+// Canvases past ~16k px fail to allocate in some browsers, so we stay under
+// that and arrange the frames into rows instead of one very long row.
+export const MAX_SHEET_DIM = 16384
+
+// Lay `frames` cells of `size` px into the squarest grid whose width stays
+// within `maxDim`. We prefer a column count that divides the frame count so
+// the last row is full and CSS playback never lands on a blank cell.
+export function computeGrid(frames, size, maxDim = MAX_SHEET_DIM) {
+  const maxCols = Math.max(1, Math.floor(maxDim / size))
+  let cols = Math.min(frames, maxCols)
+  if (cols < frames) {
+    for (let c = cols; c >= 1; c--) {
+      if (frames % c === 0) {
+        cols = c
+        break
+      }
+    }
+  }
+  return { cols, rows: Math.ceil(frames / cols) }
+}
+
 // Deterministic pseudo-random in [0, 1) so flicker bakes identically every time.
 function hash(n) {
   const x = Math.sin(n * 127.1) * 43758.5453
@@ -61,6 +88,7 @@ export class Engine {
       spin: 'turntable',
       object: 'none',
       light: 'none',
+      background: BACKGROUNDS[0],
     }
     this.viewSize = 0
   }
@@ -177,32 +205,48 @@ export class Engine {
     }
   }
 
-  render(t) {
+  // Live preview keeps a transparent canvas (so the checkerboard shows);
+  // baking passes opaque so the chosen backdrop is rendered in behind the
+  // subject and travels into the PNG/GIF/video.
+  render(t, opaque = false) {
     this.setPose(t)
+    if (opaque) this.renderer.setClearColor(this.settings.background, 1)
+    else this.renderer.setClearColor(0x000000, 0)
     this.renderer.render(this.scene, this.camera)
   }
 
-  // Renders `frames` evenly spaced poses into one horizontal strip.
-  // Each frame is rendered at 2x and downsampled for clean edges.
-  bakeStrip(frames, size) {
-    const strip = document.createElement('canvas')
-    strip.width = frames * size
-    strip.height = size
-    const ctx = strip.getContext('2d')
+  // Renders `frames` evenly spaced poses, each at 2x and downsampled for clean
+  // edges, into a sprite sheet. When a single row of `size`-px cells would be
+  // wider than `maxDim`, the frames wrap into a grid. Returns the canvas plus
+  // its grid shape so callers can build matching CSS. Always opaque.
+  bakeSheet(frames, size, maxDim = MAX_SHEET_DIM) {
+    const { cols, rows } = computeGrid(frames, size, maxDim)
+    const sheet = document.createElement('canvas')
+    sheet.width = cols * size
+    sheet.height = rows * size
+    const ctx = sheet.getContext('2d')
     ctx.imageSmoothingQuality = 'high'
 
     this.renderer.setPixelRatio(1)
     this.renderer.setSize(size * 2, size * 2, false)
     for (let i = 0; i < frames; i++) {
-      this.render(i / frames)
-      ctx.drawImage(this.renderer.domElement, 0, 0, size * 2, size * 2, i * size, 0, size, size)
+      this.render(i / frames, true)
+      const dx = (i % cols) * size
+      const dy = Math.floor(i / cols) * size
+      ctx.drawImage(this.renderer.domElement, 0, 0, size * 2, size * 2, dx, dy, size, size)
     }
     if (this.viewSize) this.setViewSize(this.viewSize)
-    return strip
+    return { canvas: sheet, cols, rows }
+  }
+
+  // Convenience wrapper that forces a single uncapped row — used for the small
+  // live preview strip, which never approaches the sheet-size limit.
+  bakeStrip(frames, size) {
+    return this.bakeSheet(frames, size, Infinity).canvas
   }
 
   bakePoster(size = 1024) {
-    return this.bakeStrip(1, size)
+    return this.bakeSheet(1, size).canvas
   }
 
   dispose() {
