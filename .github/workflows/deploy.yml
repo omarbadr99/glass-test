@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - claude/loving-johnson-8pf75q
+      - claude/opus-task-continuation-i5xvpo
   workflow_dispatch:
 
 permissions:
