@@ -92,6 +92,7 @@ export default function App() {
   const canvasRef = useRef(null)
   const viewportRef = useRef(null)
   const fileRef = useRef(null)
+  const bgFileRef = useRef(null)
   const pausedRef = useRef(false)
   const [engine, setEngine] = useState(null)
 
@@ -99,14 +100,25 @@ export default function App() {
   const [upload, setUpload] = useState(null) // { name, shapes }
   const [uploadError, setUploadError] = useState('')
   const [material, setMaterial] = useState('chrome')
+  const [tint, setTint] = useState('#4da3ff')
+  const [tintAmount, setTintAmount] = useState(0)
   const [depth, setDepth] = useState(0.22)
   const [bevel, setBevel] = useState(0.04)
-  const [background, setBackground] = useState(BACKGROUNDS[0])
+  const [bgKind, setBgKind] = useState('color') // 'color' | 'transparent' | 'image'
+  const [bgColor, setBgColor] = useState(BACKGROUNDS[0])
+  const [bgImage, setBgImage] = useState(null) // { src, name }
   const [spin, setSpin] = useState('turntable')
   const [objectMotion, setObjectMotion] = useState('none')
   const [lightMotion, setLightMotion] = useState('none')
   const [frames, setFrames] = useState(48)
   const [frameSize, setFrameSize] = useState(256)
+
+  // Collapse the three background controls into one descriptor for the engine.
+  const background = useMemo(() => {
+    if (bgKind === 'transparent') return { kind: 'transparent' }
+    if (bgKind === 'image' && bgImage) return { kind: 'image', src: bgImage.src }
+    return { kind: 'color', color: bgColor }
+  }, [bgKind, bgColor, bgImage])
 
   // Available share formats: the CSS-playable PNG sheet plus whatever video
   // containers this browser can actually encode (mp4 preferred, webm fallback).
@@ -158,6 +170,8 @@ export default function App() {
     if (!engine) return
     engine.applySettings({
       material,
+      tint,
+      tintAmount,
       depth,
       bevel,
       background,
@@ -165,7 +179,7 @@ export default function App() {
       object: objectMotion,
       light: lightMotion,
     })
-  }, [engine, material, depth, bevel, background, spin, objectMotion, lightMotion])
+  }, [engine, material, tint, tintAmount, depth, bevel, background, spin, objectMotion, lightMotion])
 
   // Re-bake the low-res preview strip whenever anything changes (debounced).
   useEffect(() => {
@@ -185,6 +199,8 @@ export default function App() {
     subject,
     upload,
     material,
+    tint,
+    tintAmount,
     depth,
     bevel,
     background,
@@ -209,6 +225,18 @@ export default function App() {
       }
     }
     reader.readAsText(file)
+    e.target.value = ''
+  }
+
+  const onBgUpload = (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = () => {
+      setBgImage({ src: reader.result, name: file.name })
+      setBgKind('image')
+    }
+    reader.readAsDataURL(file)
     e.target.value = ''
   }
 
@@ -237,7 +265,7 @@ export default function App() {
         size: frameSize,
         durationMs: LOOP_SECONDS * 1000,
         mime: type.mime,
-        render: (t) => engine.render(t, true),
+        render: (t) => engine.render(t),
       })
       downloadBlob(blob, `loop.${type.format}`)
       setBaked({ format: 'video', ext: type.format, kb: Math.round(blob.size / 1024) })
@@ -354,29 +382,80 @@ export default function App() {
               step={0.005}
               onChange={setBevel}
             />
+            <div className="tint-row">
+              <span className="motion-label">tint</span>
+              <label className="swatch picker" style={{ background: tint }}>
+                <input type="color" value={tint} onChange={(e) => setTint(e.target.value)} />
+              </label>
+              <input
+                className="tint-range"
+                type="range"
+                min={0}
+                max={1}
+                step={0.05}
+                value={tintAmount}
+                onChange={(e) => setTintAmount(Number(e.target.value))}
+              />
+              <span className="tint-val">{Math.round(tintAmount * 100)}%</span>
+            </div>
           </div>
 
           <div className="section">
             <h2>background</h2>
             <div className="swatches">
+              <button
+                className={`swatch checker${bgKind === 'transparent' ? ' active' : ''}`}
+                onClick={() => setBgKind('transparent')}
+                aria-label="transparent background"
+              />
               {BACKGROUNDS.map((c) => (
                 <button
                   key={c}
-                  className={`swatch${background === c ? ' active' : ''}`}
+                  className={`swatch${bgKind === 'color' && bgColor === c ? ' active' : ''}`}
                   style={{ background: c }}
-                  onClick={() => setBackground(c)}
+                  onClick={() => {
+                    setBgColor(c)
+                    setBgKind('color')
+                  }}
                   aria-label={`background ${c}`}
                 />
               ))}
-              <label className="swatch picker" style={{ background }}>
+              <label
+                className={`swatch picker${bgKind === 'color' && !BACKGROUNDS.includes(bgColor) ? ' active' : ''}`}
+                style={{ background: bgColor }}
+              >
                 <input
                   type="color"
-                  value={background}
-                  onChange={(e) => setBackground(e.target.value)}
+                  value={bgColor}
+                  onChange={(e) => {
+                    setBgColor(e.target.value)
+                    setBgKind('color')
+                  }}
                 />
               </label>
             </div>
-            <p className="hint">baked into every export — exports are never transparent.</p>
+            <div className="chips">
+              <button className="chip ghost" onClick={() => bgFileRef.current.click()}>
+                {bgImage ? `image: ${bgImage.name}` : 'upload image'}
+              </button>
+              {bgImage && bgKind !== 'image' && (
+                <button className="chip" onClick={() => setBgKind('image')}>
+                  use image
+                </button>
+              )}
+            </div>
+            <input
+              ref={bgFileRef}
+              type="file"
+              accept="image/*"
+              hidden
+              onChange={onBgUpload}
+            />
+            <p className="hint">
+              {bgKind === 'transparent'
+                ? 'transparent — png/poster keep alpha; video falls back to black.'
+                : 'baked into every export.'}
+            </p>
           </div>
 
           <div className="section">
@@ -403,10 +482,26 @@ export default function App() {
               value={frameSize}
               display={`${frameSize}px`}
               min={64}
-              max={512}
-              step={32}
+              max={1024}
+              step={64}
               onChange={setFrameSize}
             />
+            <div className="tint-row">
+              <span className="motion-label">custom</span>
+              <input
+                className="num"
+                type="number"
+                min={64}
+                max={1024}
+                step={1}
+                value={frameSize}
+                onChange={(e) => {
+                  const v = Math.round(Number(e.target.value) || 0)
+                  setFrameSize(Math.max(64, Math.min(1024, v)))
+                }}
+              />
+              <span className="tint-val">px</span>
+            </div>
           </div>
 
           <div className="section">

@@ -83,13 +83,19 @@ export class Engine {
     this.yUp = true
     this.settings = {
       material: 'chrome',
+      tint: '#ffffff',
+      tintAmount: 0,
       depth: 0.22,
       bevel: 0.04,
       spin: 'turntable',
       object: 'none',
       light: 'none',
-      background: BACKGROUNDS[0],
+      background: { kind: 'color', color: BACKGROUNDS[0] },
     }
+    // Reused scratch color + lazily loaded backdrop image texture.
+    this._bgColor = new THREE.Color()
+    this._bgTexture = null
+    this._bgSrc = null
     this.viewSize = 0
   }
 
@@ -106,16 +112,61 @@ export class Engine {
   }
 
   applySettings(next) {
-    const geomChanged = next.depth !== this.settings.depth || next.bevel !== this.settings.bevel
-    const matChanged = next.material !== this.settings.material
+    const prev = this.settings
+    const geomChanged = next.depth !== prev.depth || next.bevel !== prev.bevel
+    const matChanged =
+      next.material !== prev.material ||
+      next.tint !== prev.tint ||
+      next.tintAmount !== prev.tintAmount
     this.settings = { ...next }
+    this.setBackground(next.background)
     if (this.mesh && geomChanged) this.rebuild()
     else if (this.mesh && matChanged) this.mesh.material = this.makeMaterial()
   }
 
   makeMaterial() {
     if (this.mesh?.material) this.mesh.material.dispose()
-    return new THREE.MeshPhysicalMaterial(MATERIALS[this.settings.material])
+    const { material, tint, tintAmount } = this.settings
+    const mat = new THREE.MeshPhysicalMaterial(MATERIALS[material])
+    // Tint pulls the base finish toward the chosen hue; 0 leaves it untouched.
+    if (tintAmount > 0) mat.color.lerp(new THREE.Color(tint), tintAmount)
+    return mat
+  }
+
+  // Resolve a background descriptor: { kind: 'color', color } | { kind:
+  // 'transparent' } | { kind: 'image', src }. Image textures load async and
+  // are center-cropped to the square frame; render() falls back to transparent
+  // until the bitmap is ready.
+  setBackground(bg) {
+    if (!bg || bg.kind !== 'image') {
+      if (this._bgTexture) {
+        this._bgTexture.dispose()
+        this._bgTexture = null
+      }
+      this._bgSrc = null
+      return
+    }
+    if (bg.src === this._bgSrc) return
+    this._bgSrc = bg.src
+    new THREE.TextureLoader().load(bg.src, (tex) => {
+      // Ignore a stale load if the source changed again mid-flight.
+      if (this._bgSrc !== bg.src) {
+        tex.dispose()
+        return
+      }
+      tex.colorSpace = THREE.SRGBColorSpace
+      const img = tex.image
+      const aspect = img.width / img.height
+      if (aspect > 1) {
+        tex.repeat.set(1 / aspect, 1)
+        tex.offset.set((1 - 1 / aspect) / 2, 0)
+      } else {
+        tex.repeat.set(1, aspect)
+        tex.offset.set(0, (1 - aspect) / 2)
+      }
+      this._bgTexture?.dispose()
+      this._bgTexture = tex
+    })
   }
 
   rebuild() {
@@ -139,15 +190,17 @@ export class Engine {
     const scale = 2.1 / span
 
     const { depth, bevel } = this.settings
+    // Heavier subdivision so curved outlines and the rounded bevel read as
+    // smooth rather than faceted, especially at large export sizes.
     const geometry = new THREE.ExtrudeGeometry(this.shapes, {
       steps: 1,
       depth: depth / scale,
-      curveSegments: 48,
+      curveSegments: 96,
       bevelEnabled: bevel > 0,
       bevelThickness: bevel / scale,
       bevelSize: bevel / scale,
       bevelOffset: -bevel / (2 * scale),
-      bevelSegments: 5,
+      bevelSegments: 12,
     })
     geometry.center()
 
@@ -205,20 +258,29 @@ export class Engine {
     }
   }
 
-  // Live preview keeps a transparent canvas (so the checkerboard shows);
-  // baking passes opaque so the chosen backdrop is rendered in behind the
-  // subject and travels into the PNG/GIF/video.
-  render(t, opaque = false) {
+  // Renders one pose with the active backdrop. The same path drives the live
+  // preview and every bake, so what you see is what you export. A transparent
+  // background leaves the canvas clear (checkerboard shows, PNG keeps alpha);
+  // a color or loaded image fills it opaque.
+  render(t) {
     this.setPose(t)
-    if (opaque) this.renderer.setClearColor(this.settings.background, 1)
-    else this.renderer.setClearColor(0x000000, 0)
+    const bg = this.settings.background
+    if (bg?.kind === 'image' && this._bgTexture) {
+      this.scene.background = this._bgTexture
+    } else if (bg?.kind === 'color') {
+      this.scene.background = this._bgColor.set(bg.color)
+    } else {
+      // transparent, or an image still loading
+      this.scene.background = null
+      this.renderer.setClearColor(0x000000, 0)
+    }
     this.renderer.render(this.scene, this.camera)
   }
 
   // Renders `frames` evenly spaced poses, each at 2x and downsampled for clean
   // edges, into a sprite sheet. When a single row of `size`-px cells would be
   // wider than `maxDim`, the frames wrap into a grid. Returns the canvas plus
-  // its grid shape so callers can build matching CSS. Always opaque.
+  // its grid shape so callers can build matching CSS.
   bakeSheet(frames, size, maxDim = MAX_SHEET_DIM) {
     const { cols, rows } = computeGrid(frames, size, maxDim)
     const sheet = document.createElement('canvas')
@@ -230,7 +292,7 @@ export class Engine {
     this.renderer.setPixelRatio(1)
     this.renderer.setSize(size * 2, size * 2, false)
     for (let i = 0; i < frames; i++) {
-      this.render(i / frames, true)
+      this.render(i / frames)
       const dx = (i % cols) * size
       const dy = Math.floor(i / cols) * size
       ctx.drawImage(this.renderer.domElement, 0, 0, size * 2, size * 2, dx, dy, size, size)
@@ -254,6 +316,7 @@ export class Engine {
       this.mesh.geometry.dispose()
       this.mesh.material.dispose()
     }
+    this._bgTexture?.dispose()
     this.scene.environment?.dispose()
     this.renderer.dispose()
   }

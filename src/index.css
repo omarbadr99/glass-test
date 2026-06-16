@@ -218,6 +218,60 @@ main {
   overflow: hidden;
 }
 
+/* Transparent option, drawn as a small checkerboard. */
+.swatch.checker {
+  background-image: conic-gradient(
+    var(--check-a) 90deg,
+    var(--check-b) 90deg 180deg,
+    var(--check-a) 180deg 270deg,
+    var(--check-b) 270deg
+  );
+  background-size: 10px 10px;
+}
+
+.tint-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.tint-row .motion-label {
+  margin: 0;
+}
+
+.tint-row .swatch.picker {
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+}
+
+.tint-range {
+  flex: 1;
+}
+
+.tint-val {
+  color: var(--soft);
+  width: 36px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.num {
+  font: inherit;
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink);
+  padding: 4px 8px;
+}
+
+.num:focus {
+  outline: none;
+  border-color: var(--ink);
+}
+
 .swatch.picker input[type='color'] {
   position: absolute;
   inset: -4px;
