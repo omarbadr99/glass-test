@@ -189,8 +189,6 @@ export class Engine {
 
   makeMaterial() {
     if (this.mesh?.material) this.mesh.material.dispose()
-    // Clear any previous screen-reflection hook; re-attached below if needed.
-    this._ssrUniforms = null
     const { material, tint, tintAmount } = this.settings
     const reflectivity = this.settings.reflectivity ?? 0.5
     const def = MATERIALS[material]
@@ -214,71 +212,8 @@ export class Engine {
       const t = ((this.settings.distance ?? 0) + 3) / 5
       mat.thickness = THREE.MathUtils.lerp(0.4, 3, t)
       mat.ior = THREE.MathUtils.lerp(1.3, 1.7, t)
-    } else if (def.metalness > 0.5 && this.settings.background?.kind === 'image' && this._bgTexture) {
-      // Screen-space scene reflection is only right for metals (which *are*
-      // their reflection). Dielectrics like porcelain/obsidian keep their
-      // albedo + studio-panel gloss, otherwise the reflection blacks them out.
-      this._attachScreenReflection(mat)
     }
     return mat
-  }
-
-  // Sample the backdrop at each fragment's screen position so the surface
-  // mirrors the actual background behind it: at the low distance the sample is
-  // 1:1 (the item blends into the backdrop like the glass refraction), and
-  // distance zooms the sample around centre. Reflectivity sets how fully it
-  // takes over from the shaded metal, and adds blur toward the matte end.
-  _attachScreenReflection(mat) {
-    const tex = this._bgTexture
-    const dist = this.settings.distance ?? 0
-    const t = (dist + 3) / 5
-    const reflectivity = this.settings.reflectivity ?? 0.5
-    const uniforms = {
-      uBgMap: { value: tex },
-      uResolution: { value: new THREE.Vector2(1, 1) },
-      uBgRepeat: { value: tex.repeat.clone() },
-      uBgOffset: { value: tex.offset.clone() },
-      uZoom: { value: THREE.MathUtils.lerp(1.15, 3.2, t) },
-      uReflMix: { value: THREE.MathUtils.clamp(0.4 + reflectivity * 0.6, 0, 1) },
-      uBlur: { value: (1 - reflectivity) * 5 + t * 1.5 },
-      // The reflected scene shifts with the surface normal so it swirls as the
-      // item turns instead of sitting pinned to the screen.
-      uParallax: { value: 0.13 },
-    }
-    mat.onBeforeCompile = (shader) => {
-      Object.assign(shader.uniforms, uniforms)
-      shader.fragmentShader =
-        `uniform sampler2D uBgMap;
-uniform vec2 uResolution;
-uniform vec2 uBgRepeat;
-uniform vec2 uBgOffset;
-uniform float uZoom;
-uniform float uReflMix;
-uniform float uBlur;
-uniform float uParallax;
-` +
-        shader.fragmentShader.replace(
-          '#include <tonemapping_fragment>',
-          `{
-  vec3 _orig = gl_FragColor.rgb;
-  vec3 _vn = normalize(vNormal);
-  vec2 _suv = gl_FragCoord.xy / uResolution;
-  vec2 _zuv = (_suv - 0.5) / uZoom + 0.5 + _vn.xy * uParallax;
-  vec2 _buv = _zuv * uBgRepeat + uBgOffset;
-  vec3 _bg = texture2D(uBgMap, _buv, uBlur).rgb;
-  _bg = pow(_bg, vec3(2.2));
-  vec3 _scene = _bg * diffuseColor.rgb;
-  // Keep the bright studio highlights from the env reflection so the surface
-  // still reads as polished metal, scene fills everywhere else.
-  float _hi = smoothstep(0.5, 1.3, max(_orig.r, max(_orig.g, _orig.b)));
-  vec3 _refl = mix(_scene, _orig, _hi);
-  gl_FragColor.rgb = mix(_orig, _refl, uReflMix);
-}
-#include <tonemapping_fragment>`
-        )
-    }
-    mat.needsUpdate = true
-    this._ssrUniforms = uniforms
   }
 
   // Resolve a background descriptor: { kind: 'color', color } | { kind:
@@ -314,30 +249,36 @@ uniform float uParallax;
       }
       this._bgTexture?.dispose()
       this._bgTexture = tex
-      // The bitmap now exists: rebuild reflections and (re)attach the
-      // screen-space reflection to an opaque material that was waiting for it.
+      // The bitmap now exists: rebuild the reflection probe so metals reflect
+      // the scene (scene.environment updates; materials need no rebuild).
       this.refreshEnvironment()
-      if (this.mesh && !MATERIALS[this.settings.material].transmission) {
-        this.mesh.material = this.makeMaterial()
-      }
     })
   }
 
-  // Rebuild the sharp reflection probe so metals mirror the *actual* backdrop.
-  // The probe scene is surrounded by the background — a flat image plane behind
-  // the camera, then captured into a cube the materials sample for highlights.
-  // For an image backdrop the cube is just neutral studio panels (so metals get
-  // crisp moving highlights that read as reflective); the actual true-to-size
-  // backdrop reflection is added per-fragment in screen space (see
-  // _attachScreenReflection). Color/transparent backdrops use the same panels.
+  // Rebuild the reflection probe the materials sample. For an image backdrop
+  // the surround is the scene itself (wrapped equirect) so metals reflect the
+  // surroundings tinted by their own colour — vibrant and opaque, never
+  // see-through — plus bright studio panels for crisp polished highlights.
+  // Color/transparent backdrops use the panels over a flat surround.
   refreshEnvironment() {
     const env = new THREE.Scene()
     const bg = this.settings.background
     const trash = []
 
-    if (bg?.kind === 'color') env.background = new THREE.Color(bg.color)
-    else if (bg?.kind === 'image') env.background = new THREE.Color(0x141418)
-    else env.background = new THREE.Color(0x202024) // transparent → neutral grey
+    if (bg?.kind === 'image' && this._bgTexture) {
+      const eq = this._bgTexture.clone()
+      eq.mapping = THREE.EquirectangularReflectionMapping
+      eq.repeat.set(1, 1)
+      eq.offset.set(0, 0)
+      eq.colorSpace = THREE.SRGBColorSpace
+      eq.needsUpdate = true
+      env.background = eq
+      trash.push(eq)
+    } else if (bg?.kind === 'color') {
+      env.background = new THREE.Color(bg.color)
+    } else {
+      env.background = new THREE.Color(0x202024) // transparent → neutral grey
+    }
     trash.push(...addStudioPanels(env))
 
     // Captured from the origin (where the item sits); distance is expressed by
@@ -463,9 +404,6 @@ uniform float uParallax;
       this.scene.background = null
       this.renderer.setClearColor(0x000000, 0)
     }
-    // Screen-space reflection needs the live drawing-buffer size (differs
-    // between the preview and the supersampled bake) to map fragments to uv.
-    if (this._ssrUniforms) this.renderer.getDrawingBufferSize(this._ssrUniforms.uResolution.value)
     this.renderer.render(this.scene, this.camera)
   }
 
