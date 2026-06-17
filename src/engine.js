@@ -51,6 +51,17 @@ function hash(n) {
   return x - Math.floor(x)
 }
 
+// Turn a backdrop color into a reflection tint: keep its hue but normalize the
+// brightness, then pull only partway from white. Dark/neutral backdrops barely
+// shift the metal (so the studio look survives) while saturated ones clearly
+// colour the reflection.
+function envTint(color) {
+  const m = Math.max(color.r, color.g, color.b)
+  if (m < 1e-3) return new THREE.Color(1, 1, 1)
+  const hue = new THREE.Color(color.r / m, color.g / m, color.b / m)
+  return new THREE.Color(1, 1, 1).lerp(hue, 0.7)
+}
+
 export class Engine {
   constructor(canvas) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true })
@@ -59,9 +70,9 @@ export class Engine {
     this.renderer.setPixelRatio(window.devicePixelRatio || 1)
 
     this.scene = new THREE.Scene()
-    const pmrem = new THREE.PMREMGenerator(this.renderer)
-    this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture
-    pmrem.dispose()
+    // Reflection environment is rebuilt from the backdrop (see
+    // refreshEnvironment) so metals pick up the background color/image.
+    this._envRT = null
 
     this.camera = new THREE.PerspectiveCamera(30, 1, 0.1, 50)
     this.camera.position.set(0, 0.35, 5.4)
@@ -97,6 +108,8 @@ export class Engine {
     this._bgTexture = null
     this._bgSrc = null
     this.viewSize = 0
+
+    this.refreshEnvironment()
   }
 
   setViewSize(px) {
@@ -118,8 +131,17 @@ export class Engine {
       next.material !== prev.material ||
       next.tint !== prev.tint ||
       next.tintAmount !== prev.tintAmount
+    const b1 = prev.background
+    const b2 = next.background
+    const bgChanged = !b1 || b1.kind !== b2.kind || b1.color !== b2.color || b1.src !== b2.src
     this.settings = { ...next }
-    this.setBackground(next.background)
+    if (bgChanged) {
+      this.setBackground(next.background)
+      // The backdrop itself updates instantly in render(); coalesce the
+      // costlier reflection-probe rebuild so dragging the picker stays smooth.
+      clearTimeout(this._envTimer)
+      this._envTimer = setTimeout(() => this.refreshEnvironment(), 120)
+    }
     if (this.mesh && geomChanged) this.rebuild()
     else if (this.mesh && matChanged) this.mesh.material = this.makeMaterial()
   }
@@ -166,7 +188,54 @@ export class Engine {
       }
       this._bgTexture?.dispose()
       this._bgTexture = tex
+      // Now that the bitmap exists, fold its average color into reflections.
+      this.refreshEnvironment()
     })
+  }
+
+  // Sample a small downscale of the backdrop image for its average color.
+  _averageColor(image) {
+    const c = document.createElement('canvas')
+    c.width = c.height = 16
+    const x = c.getContext('2d')
+    x.drawImage(image, 0, 0, 16, 16)
+    const d = x.getImageData(0, 0, 16, 16).data
+    let r = 0,
+      g = 0,
+      b = 0
+    for (let i = 0; i < d.length; i += 4) {
+      r += d[i]
+      g += d[i + 1]
+      b += d[i + 2]
+    }
+    const n = d.length / 4
+    return new THREE.Color(r / n / 255, g / n / 255, b / n / 255)
+  }
+
+  // Rebuild the PMREM reflection probe: a neutral studio room whose shell is
+  // multiplied by the backdrop's hue, so metals reflect the background while
+  // keeping the bright panel highlights that give them shape.
+  refreshEnvironment() {
+    const pmrem = new THREE.PMREMGenerator(this.renderer)
+    const room = new RoomEnvironment()
+    const bg = this.settings.background
+    let tint = null
+    if (bg?.kind === 'color') tint = envTint(new THREE.Color(bg.color))
+    else if (bg?.kind === 'image' && this._bgTexture?.image)
+      tint = envTint(this._averageColor(this._bgTexture.image))
+    if (tint) {
+      room.traverse((o) => {
+        // The room shell is the only back-facing mesh; the light panels are
+        // front-facing emitters and stay white.
+        if (o.isMesh && o.material?.side === THREE.BackSide) o.material.color.multiply(tint)
+      })
+    }
+    const rt = pmrem.fromScene(room, 0.04)
+    this._envRT?.dispose()
+    this._envRT = rt
+    this.scene.environment = rt.texture
+    pmrem.dispose()
+    room.dispose()
   }
 
   rebuild() {
@@ -316,8 +385,9 @@ export class Engine {
       this.mesh.geometry.dispose()
       this.mesh.material.dispose()
     }
+    clearTimeout(this._envTimer)
     this._bgTexture?.dispose()
-    this.scene.environment?.dispose()
+    this._envRT?.dispose()
     this.renderer.dispose()
   }
 }
