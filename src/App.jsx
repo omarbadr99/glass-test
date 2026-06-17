@@ -102,6 +102,7 @@ export default function App() {
   const [material, setMaterial] = useState('chrome')
   const [tint, setTint] = useState('#4da3ff')
   const [tintAmount, setTintAmount] = useState(0)
+  const [reflectivity, setReflectivity] = useState(0.5)
   const [depth, setDepth] = useState(0.22)
   const [bevel, setBevel] = useState(0.04)
   const [bgKind, setBgKind] = useState('color') // 'color' | 'transparent' | 'image'
@@ -172,6 +173,7 @@ export default function App() {
       material,
       tint,
       tintAmount,
+      reflectivity,
       depth,
       bevel,
       background,
@@ -179,7 +181,19 @@ export default function App() {
       object: objectMotion,
       light: lightMotion,
     })
-  }, [engine, material, tint, tintAmount, depth, bevel, background, spin, objectMotion, lightMotion])
+  }, [
+    engine,
+    material,
+    tint,
+    tintAmount,
+    reflectivity,
+    depth,
+    bevel,
+    background,
+    spin,
+    objectMotion,
+    lightMotion,
+  ])
 
   // Re-bake the low-res preview strip whenever anything changes (debounced).
   useEffect(() => {
@@ -201,6 +215,7 @@ export default function App() {
     material,
     tint,
     tintAmount,
+    reflectivity,
     depth,
     bevel,
     background,
@@ -398,6 +413,15 @@ export default function App() {
               />
               <span className="tint-val">{Math.round(tintAmount * 100)}%</span>
             </div>
+            <Slider
+              label="reflectivity"
+              value={reflectivity}
+              display={reflectivity <= 0.04 ? 'matte' : reflectivity >= 0.96 ? 'mirror' : `${Math.round(reflectivity * 100)}%`}
+              min={0}
+              max={1}
+              step={0.02}
+              onChange={setReflectivity}
+            />
           </div>
 
           <div className="section">

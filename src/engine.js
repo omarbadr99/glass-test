@@ -96,6 +96,7 @@ export class Engine {
       material: 'chrome',
       tint: '#ffffff',
       tintAmount: 0,
+      reflectivity: 0.5,
       depth: 0.22,
       bevel: 0.04,
       spin: 'turntable',
@@ -130,7 +131,8 @@ export class Engine {
     const matChanged =
       next.material !== prev.material ||
       next.tint !== prev.tint ||
-      next.tintAmount !== prev.tintAmount
+      next.tintAmount !== prev.tintAmount ||
+      next.reflectivity !== prev.reflectivity
     const b1 = prev.background
     const b2 = next.background
     const bgChanged = !b1 || b1.kind !== b2.kind || b1.color !== b2.color || b1.src !== b2.src
@@ -149,9 +151,21 @@ export class Engine {
   makeMaterial() {
     if (this.mesh?.material) this.mesh.material.dispose()
     const { material, tint, tintAmount } = this.settings
-    const mat = new THREE.MeshPhysicalMaterial(MATERIALS[material])
+    const reflectivity = this.settings.reflectivity ?? 0.5
+    const def = MATERIALS[material]
+    const mat = new THREE.MeshPhysicalMaterial(def)
     // Tint pulls the base finish toward the chosen hue; 0 leaves it untouched.
     if (tintAmount > 0) mat.color.lerp(new THREE.Color(tint), tintAmount)
+    // Reflectivity dial scales the material's designed roughness: 0.5 keeps it
+    // as authored, →1 drives roughness toward a mirror, →0 toward matte. A
+    // small env-intensity lift on the bright side makes the gain read clearly.
+    const base = def.roughness ?? 0.5
+    const f =
+      reflectivity >= 0.5
+        ? (1 - reflectivity) / 0.5
+        : 1 + ((0.5 - reflectivity) / 0.5) * 4
+    mat.roughness = Math.min(1, base * f)
+    mat.envMapIntensity = 0.55 + reflectivity * 0.9
     return mat
   }
 
