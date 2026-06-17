@@ -189,6 +189,8 @@ export class Engine {
 
   makeMaterial() {
     if (this.mesh?.material) this.mesh.material.dispose()
+    // Clear any previous screen-reflection hook; re-attached below if needed.
+    this._ssrUniforms = null
     const { material, tint, tintAmount } = this.settings
     const reflectivity = this.settings.reflectivity ?? 0.5
     const def = MATERIALS[material]
@@ -212,8 +214,61 @@ export class Engine {
       const t = ((this.settings.distance ?? 0) + 3) / 5
       mat.thickness = THREE.MathUtils.lerp(0.4, 3, t)
       mat.ior = THREE.MathUtils.lerp(1.3, 1.7, t)
+    } else if (this.settings.background?.kind === 'image' && this._bgTexture) {
+      // Opaque finishes over an image backdrop reflect it via screen space, so
+      // a flat face shows the backdrop true-to-size (env maps magnify it).
+      this._attachScreenReflection(mat)
     }
     return mat
+  }
+
+  // Sample the backdrop at each fragment's screen position so the surface
+  // mirrors the actual background behind it: at the low distance the sample is
+  // 1:1 (the item blends into the backdrop like the glass refraction), and
+  // distance zooms the sample around centre. Reflectivity sets how fully it
+  // takes over from the shaded metal, and adds blur toward the matte end.
+  _attachScreenReflection(mat) {
+    const tex = this._bgTexture
+    const dist = this.settings.distance ?? 0
+    const t = (dist + 3) / 5
+    const reflectivity = this.settings.reflectivity ?? 0.5
+    const uniforms = {
+      uBgMap: { value: tex },
+      uResolution: { value: new THREE.Vector2(1, 1) },
+      uBgRepeat: { value: tex.repeat.clone() },
+      uBgOffset: { value: tex.offset.clone() },
+      uZoom: { value: THREE.MathUtils.lerp(1.15, 3.2, t) },
+      uReflMix: { value: THREE.MathUtils.clamp(0.25 + reflectivity * 0.75, 0, 1) },
+      uBlur: { value: (1 - reflectivity) * 5 + t * 1.5 },
+    }
+    mat.onBeforeCompile = (shader) => {
+      Object.assign(shader.uniforms, uniforms)
+      shader.fragmentShader =
+        `uniform sampler2D uBgMap;
+uniform vec2 uResolution;
+uniform vec2 uBgRepeat;
+uniform vec2 uBgOffset;
+uniform float uZoom;
+uniform float uReflMix;
+uniform float uBlur;
+` +
+        shader.fragmentShader.replace(
+          '#include <tonemapping_fragment>',
+          `{
+  vec2 _suv = gl_FragCoord.xy / uResolution;
+  vec2 _zuv = (_suv - 0.5) / uZoom + 0.5;
+  vec2 _buv = _zuv * uBgRepeat + uBgOffset;
+  vec3 _bg = texture2D(uBgMap, _buv, uBlur).rgb;
+  _bg = pow(_bg, vec3(2.2));
+  gl_FragColor.rgb = mix(gl_FragColor.rgb, _bg * diffuseColor.rgb, uReflMix);
+  float _fres = pow(1.0 - clamp(normalize(vNormal).z, 0.0, 1.0), 3.0);
+  gl_FragColor.rgb += _fres * uReflMix * 0.2;
+}
+#include <tonemapping_fragment>`
+        )
+    }
+    mat.needsUpdate = true
+    this._ssrUniforms = uniforms
   }
 
   // Resolve a background descriptor: { kind: 'color', color } | { kind:
@@ -249,8 +304,12 @@ export class Engine {
       }
       this._bgTexture?.dispose()
       this._bgTexture = tex
-      // Now that the bitmap exists, fold its average color into reflections.
+      // The bitmap now exists: rebuild reflections and (re)attach the
+      // screen-space reflection to an opaque material that was waiting for it.
       this.refreshEnvironment()
+      if (this.mesh && !MATERIALS[this.settings.material].transmission) {
+        this.mesh.material = this.makeMaterial()
+      }
     })
   }
 
@@ -440,6 +499,9 @@ export class Engine {
       this.scene.background = null
       this.renderer.setClearColor(0x000000, 0)
     }
+    // Screen-space reflection needs the live drawing-buffer size (differs
+    // between the preview and the supersampled bake) to map fragments to uv.
+    if (this._ssrUniforms) this.renderer.getDrawingBufferSize(this._ssrUniforms.uResolution.value)
     this.renderer.render(this.scene, this.camera)
   }
 
