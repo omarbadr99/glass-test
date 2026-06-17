@@ -85,9 +85,15 @@ export class Engine {
     this.renderer.setPixelRatio(window.devicePixelRatio || 1)
 
     this.scene = new THREE.Scene()
-    // Reflection environment is rebuilt from the backdrop (see
-    // refreshEnvironment) so metals pick up the background color/image.
-    this._envRT = null
+    // Sharp reflection probe rebuilt from the backdrop (see refreshEnvironment)
+    // so metals mirror the actual background image/color. A high-res cube (not
+    // PMREM, which is pre-blurred) is what makes a true mirror possible.
+    this._cubeRT = new THREE.WebGLCubeRenderTarget(1024, {
+      type: THREE.HalfFloatType,
+      generateMipmaps: true,
+      minFilter: THREE.LinearMipmapLinearFilter,
+    })
+    this._cubeCam = new THREE.CubeCamera(0.1, 100, this._cubeRT)
 
     this.camera = new THREE.PerspectiveCamera(30, 1, 0.1, 50)
     this.camera.position.set(0, 0.35, 5.4)
@@ -222,13 +228,13 @@ export class Engine {
     })
   }
 
-  // Rebuild the PMREM reflection probe so metals mirror the *actual* backdrop.
-  // For an image we want a literal mirror, not stretched glare: a flat copy of
-  // the image is placed behind the camera so surfaces facing the viewer reflect
-  // a recognizable copy, while a dim equirect wrap fills the other directions so
-  // the sides aren't black. Colors/transparent keep the studio-panel highlights.
+  // Rebuild the sharp reflection probe so metals mirror the *actual* backdrop.
+  // The probe scene is surrounded by the background — a flat image plane behind
+  // the camera for a crisp, recognizable frontal mirror, plus an equirect wrap
+  // so the sides aren't black — then captured into a high-res cube the
+  // materials sample. Roughness (the reflectivity dial) blurs it via mipmaps:
+  // a mirror at 0, a soft sheen as it climbs.
   refreshEnvironment() {
-    const pmrem = new THREE.PMREMGenerator(this.renderer)
     const env = new THREE.Scene()
     const bg = this.settings.background
     const trash = []
@@ -258,14 +264,7 @@ export class Engine {
       flat.needsUpdate = true
       const h = 34
       const geo = new THREE.PlaneGeometry(h * aspect, h)
-      const mat = new THREE.MeshStandardMaterial({
-        color: 0x000000,
-        emissive: 0xffffff,
-        emissiveMap: flat,
-        emissiveIntensity: 1.3,
-        roughness: 1,
-        side: THREE.DoubleSide,
-      })
+      const mat = new THREE.MeshBasicMaterial({ map: flat, side: THREE.DoubleSide })
       const plane = new THREE.Mesh(geo, mat)
       plane.position.set(0, 0, 9)
       plane.lookAt(0, 0, 0)
@@ -279,12 +278,14 @@ export class Engine {
       trash.push(...addStudioPanels(env))
     }
 
-    const rt = pmrem.fromScene(env, 0.02)
-    this._envRT?.dispose()
-    this._envRT = rt
-    this.scene.environment = rt.texture
+    // Capture linear radiance (no tone map) so the main render tone-maps the
+    // reflection exactly once — otherwise the mirror reads muted.
+    const prevTone = this.renderer.toneMapping
+    this.renderer.toneMapping = THREE.NoToneMapping
+    this._cubeCam.update(this.renderer, env)
+    this.renderer.toneMapping = prevTone
+    this.scene.environment = this._cubeRT.texture
 
-    pmrem.dispose()
     trash.forEach((d) => d.dispose())
   }
 
@@ -437,7 +438,7 @@ export class Engine {
     }
     clearTimeout(this._envTimer)
     this._bgTexture?.dispose()
-    this._envRT?.dispose()
+    this._cubeRT?.dispose()
     this.renderer.dispose()
   }
 }
