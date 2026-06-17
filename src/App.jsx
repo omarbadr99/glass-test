@@ -511,8 +511,8 @@ export default function App() {
               onChange={setDistance}
             />
             <p className="hint">
-              size scales the item. distance floats it off the backdrop — the reflection grows as
-              it moves away, while the item's size stays put.
+              size scales the item. distance keeps the item put and zooms its reflection: lowest
+              mirrors the whole backdrop ~1:1, higher reflects a magnified crop.
             </p>
           </div>
 
