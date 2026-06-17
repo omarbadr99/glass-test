@@ -104,11 +104,15 @@ export class Engine {
     this.key.position.set(2.5, 3, 4)
     this.scene.add(this.key)
 
-    // rig carries the motion; holder carries per-subject orientation fixes
+    // root holds the standing distance from the backdrop; rig carries the
+    // motion; holder carries per-subject orientation fixes. Keeping distance on
+    // root (outside the spinning rig) moves the item in/out without orbiting it.
+    this.root = new THREE.Group()
     this.rig = new THREE.Group()
     this.holder = new THREE.Group()
     this.rig.add(this.holder)
-    this.scene.add(this.rig)
+    this.root.add(this.rig)
+    this.scene.add(this.root)
 
     this.mesh = null
     this.shapes = []
@@ -118,6 +122,8 @@ export class Engine {
       tint: '#ffffff',
       tintAmount: 0,
       reflectivity: 0.5,
+      size: 1,
+      distance: 0,
       depth: 0.22,
       bevel: 0.04,
       spin: 'turntable',
@@ -154,6 +160,7 @@ export class Engine {
       next.tint !== prev.tint ||
       next.tintAmount !== prev.tintAmount ||
       next.reflectivity !== prev.reflectivity
+    const transformChanged = next.size !== prev.size || next.distance !== prev.distance
     const b1 = prev.background
     const b2 = next.background
     const bgChanged = !b1 || b1.kind !== b2.kind || b1.color !== b2.color || b1.src !== b2.src
@@ -167,6 +174,14 @@ export class Engine {
     }
     if (this.mesh && geomChanged) this.rebuild()
     else if (this.mesh && matChanged) this.mesh.material = this.makeMaterial()
+    if (transformChanged) this.applyTransform()
+  }
+
+  // Size scales the item; distance slides it along the view axis (off the
+  // backdrop toward the viewer). Both are cheap and skip the geometry rebuild.
+  applyTransform() {
+    if (this.mesh) this.mesh.scale.setScalar(this._baseScale * (this.settings.size ?? 1))
+    this.root.position.z = this.settings.distance ?? 0
   }
 
   makeMaterial() {
@@ -325,11 +340,13 @@ export class Engine {
     geometry.center()
 
     this.mesh = new THREE.Mesh(geometry, this.makeMaterial())
-    this.mesh.scale.setScalar(scale)
+    // Base scale fits the outline; the size dial multiplies it in applyTransform.
+    this._baseScale = scale
     // SVG files are y-down; a half-turn around X re-rights them and is
     // harmless because the extrusion is centered along Z.
     this.holder.rotation.x = this.yUp ? 0 : Math.PI
     this.holder.add(this.mesh)
+    this.applyTransform()
   }
 
   setPose(t) {

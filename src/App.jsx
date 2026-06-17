@@ -103,6 +103,8 @@ export default function App() {
   const [tint, setTint] = useState('#4da3ff')
   const [tintAmount, setTintAmount] = useState(0)
   const [reflectivity, setReflectivity] = useState(0.5)
+  const [size, setSize] = useState(1)
+  const [distance, setDistance] = useState(0)
   const [depth, setDepth] = useState(0.22)
   const [bevel, setBevel] = useState(0.04)
   const [bgKind, setBgKind] = useState('color') // 'color' | 'transparent' | 'image'
@@ -174,6 +176,8 @@ export default function App() {
       tint,
       tintAmount,
       reflectivity,
+      size,
+      distance,
       depth,
       bevel,
       background,
@@ -187,6 +191,8 @@ export default function App() {
     tint,
     tintAmount,
     reflectivity,
+    size,
+    distance,
     depth,
     bevel,
     background,
@@ -216,6 +222,8 @@ export default function App() {
     tint,
     tintAmount,
     reflectivity,
+    size,
+    distance,
     depth,
     bevel,
     background,
@@ -480,6 +488,29 @@ export default function App() {
                 ? 'transparent — png/poster keep alpha; video falls back to black.'
                 : 'baked into every export.'}
             </p>
+          </div>
+
+          <div className="section">
+            <h2>placement</h2>
+            <Slider
+              label="size"
+              value={size}
+              display={`${Math.round(size * 100)}%`}
+              min={0.4}
+              max={2.5}
+              step={0.05}
+              onChange={setSize}
+            />
+            <Slider
+              label="distance"
+              value={distance}
+              display={distance === 0 ? 'flat' : distance > 0 ? `+${distance.toFixed(1)}` : distance.toFixed(1)}
+              min={-3}
+              max={2}
+              step={0.1}
+              onChange={setDistance}
+            />
+            <p className="hint">size scales the item; distance lifts it off the backdrop toward you.</p>
           </div>
 
           <div className="section">
