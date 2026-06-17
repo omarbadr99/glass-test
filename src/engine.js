@@ -1,5 +1,4 @@
 import * as THREE from 'three'
-import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js'
 
 const TAU = Math.PI * 2
 
@@ -51,15 +50,31 @@ function hash(n) {
   return x - Math.floor(x)
 }
 
-// Turn a backdrop color into a reflection tint: keep its hue but normalize the
-// brightness, then pull only partway from white. Dark/neutral backdrops barely
-// shift the metal (so the studio look survives) while saturated ones clearly
-// colour the reflection.
-function envTint(color) {
-  const m = Math.max(color.r, color.g, color.b)
-  if (m < 1e-3) return new THREE.Color(1, 1, 1)
-  const hue = new THREE.Color(color.r / m, color.g / m, color.b / m)
-  return new THREE.Color(1, 1, 1).lerp(hue, 0.7)
+// A few bright emissive planes added to the reflection-probe scene. They
+// survive the PMREM bake as specular highlights, so even a flat-colored
+// backdrop still gives the metal shape rather than a dead silhouette. Returns
+// the geometries/materials to dispose once the bake is done.
+function addStudioPanels(scene) {
+  const trash = []
+  const panel = (w, h, pos, intensity) => {
+    const geo = new THREE.PlaneGeometry(w, h)
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0x000000,
+      emissive: 0xffffff,
+      emissiveIntensity: intensity,
+      roughness: 1,
+      side: THREE.DoubleSide,
+    })
+    const m = new THREE.Mesh(geo, mat)
+    m.position.set(pos[0], pos[1], pos[2])
+    m.lookAt(0, 0, 0)
+    scene.add(m)
+    trash.push(geo, mat)
+  }
+  panel(6, 4, [0, 5, 5], 3) // top key
+  panel(5, 6, [-6, 1, 3], 1.6) // left fill
+  panel(5, 5, [6, -1, -3], 1.2) // right rim
+  return trash
 }
 
 export class Engine {
@@ -207,49 +222,42 @@ export class Engine {
     })
   }
 
-  // Sample a small downscale of the backdrop image for its average color.
-  _averageColor(image) {
-    const c = document.createElement('canvas')
-    c.width = c.height = 16
-    const x = c.getContext('2d')
-    x.drawImage(image, 0, 0, 16, 16)
-    const d = x.getImageData(0, 0, 16, 16).data
-    let r = 0,
-      g = 0,
-      b = 0
-    for (let i = 0; i < d.length; i += 4) {
-      r += d[i]
-      g += d[i + 1]
-      b += d[i + 2]
-    }
-    const n = d.length / 4
-    return new THREE.Color(r / n / 255, g / n / 255, b / n / 255)
-  }
-
-  // Rebuild the PMREM reflection probe: a neutral studio room whose shell is
-  // multiplied by the backdrop's hue, so metals reflect the background while
-  // keeping the bright panel highlights that give them shape.
+  // Rebuild the PMREM reflection probe so metals mirror the *actual* backdrop.
+  // The probe scene is surrounded by the background — the image wrapped as an
+  // equirect, or the solid color — plus a few bright panels for highlights,
+  // then baked to the cube the materials sample. At high reflectivity the
+  // metal shows the real image/color; at low it reads as a soft tinted sheen.
   refreshEnvironment() {
     const pmrem = new THREE.PMREMGenerator(this.renderer)
-    const room = new RoomEnvironment()
+    const env = new THREE.Scene()
     const bg = this.settings.background
-    let tint = null
-    if (bg?.kind === 'color') tint = envTint(new THREE.Color(bg.color))
-    else if (bg?.kind === 'image' && this._bgTexture?.image)
-      tint = envTint(this._averageColor(this._bgTexture.image))
-    if (tint) {
-      room.traverse((o) => {
-        // The room shell is the only back-facing mesh; the light panels are
-        // front-facing emitters and stay white.
-        if (o.isMesh && o.material?.side === THREE.BackSide) o.material.color.multiply(tint)
-      })
+    let eqClone = null
+
+    if (bg?.kind === 'image' && this._bgTexture?.image) {
+      // A separate texture instance mapped as an equirect surround; the visible
+      // backdrop keeps its own center-cropped instance untouched.
+      eqClone = this._bgTexture.clone()
+      eqClone.mapping = THREE.EquirectangularReflectionMapping
+      eqClone.repeat.set(1, 1)
+      eqClone.offset.set(0, 0)
+      eqClone.colorSpace = THREE.SRGBColorSpace
+      eqClone.needsUpdate = true
+      env.background = eqClone
+    } else if (bg?.kind === 'color') {
+      env.background = new THREE.Color(bg.color)
+    } else {
+      env.background = new THREE.Color(0x202024) // transparent → neutral grey
     }
-    const rt = pmrem.fromScene(room, 0.04)
+
+    const trash = addStudioPanels(env)
+    const rt = pmrem.fromScene(env, 0.04)
     this._envRT?.dispose()
     this._envRT = rt
     this.scene.environment = rt.texture
+
     pmrem.dispose()
-    room.dispose()
+    trash.forEach((d) => d.dispose())
+    eqClone?.dispose()
   }
 
   rebuild() {
