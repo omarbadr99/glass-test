@@ -168,9 +168,11 @@ export class Engine {
     this.settings = { ...next }
     if (bgChanged) this.setBackground(next.background)
     if (sizeChanged) this.applyTransform()
+    // Distance feeds glass refraction (thickness) as well as the reflection
+    // probe, so the material is rebuilt when it changes.
     if (this.mesh && geomChanged) this.rebuild()
-    else if (this.mesh && matChanged) this.mesh.material = this.makeMaterial()
-    // Distance only moves the reflected backdrop in the probe, so the probe
+    else if (this.mesh && (matChanged || distanceChanged)) this.mesh.material = this.makeMaterial()
+    // Distance also re-scales the reflected backdrop in the probe, so the probe
     // must rebake; debounce it (shared with background changes) for smoothness.
     if (bgChanged || distanceChanged) {
       clearTimeout(this._envTimer)
@@ -203,6 +205,14 @@ export class Engine {
         : 1 + ((0.5 - reflectivity) / 0.5) * 4
     mat.roughness = Math.min(1, base * f)
     mat.envMapIntensity = 0.55 + reflectivity * 0.9
+    // For transmissive finishes (glass) distance drives the refraction: a
+    // thicker slab bends what you see through it more, so the backdrop shifts
+    // and magnifies as the item floats further off it.
+    if (def.transmission) {
+      const t = ((this.settings.distance ?? 0) + 3) / 5
+      mat.thickness = THREE.MathUtils.lerp(0.4, 3, t)
+      mat.ior = THREE.MathUtils.lerp(1.3, 1.7, t)
+    }
     return mat
   }
 
@@ -259,7 +269,15 @@ export class Engine {
       const img = this._bgTexture.image
       const aspect = img.width / img.height || 1
 
-      // Ambient fill so every direction carries the image's tones.
+      // One large backdrop plane that fully covers the reflection hemisphere so
+      // there's no magnified 360°-wrap leaking into the surface. Distance sets
+      // how large the image reads via UV scale (not plane distance): the low
+      // end shows it ~true-to-size (matching the backdrop the glass refracts),
+      // the high end magnifies a centered crop, edges clamped so they smear
+      // rather than reveal the wrap. (-3..2 → t 0..1.)
+      // Equirect wrap only fills the side/back angles (occluded in front by the
+      // covering plane below), so the surface carries the image's tones rather
+      // than going black as it spins past the plane's edge.
       const eq = this._bgTexture.clone()
       eq.mapping = THREE.EquirectangularReflectionMapping
       eq.repeat.set(1, 1)
@@ -269,21 +287,21 @@ export class Engine {
       env.background = eq
       trash.push(eq)
 
-      // Crisp frontal mirror: a large image plane behind the camera (+Z). A
-      // face whose normal points at the viewer reflects toward +Z and lands on
-      // this plane, showing a clean (mirror-flipped) copy of the image.
       const flat = this._bgTexture.clone()
       flat.mapping = THREE.UVMapping
-      flat.repeat.set(1, 1)
-      flat.offset.set(0, 0)
+      flat.wrapS = THREE.ClampToEdgeWrapping
+      flat.wrapT = THREE.ClampToEdgeWrapping
       flat.colorSpace = THREE.SRGBColorSpace
-      flat.needsUpdate = true
-      // Distance drives the reflection zoom by sliding the backdrop plane: far
-      // at the low end so the surface mirrors the whole backdrop ~1:1, near at
-      // the high end so it reflects a magnified crop. (-3..2 → t 0..1.)
+      flat.center.set(0.5, 0.5)
       const t = ((this.settings.distance ?? 0) + 3) / 5
-      const planeZ = THREE.MathUtils.lerp(46, 14, t)
-      const fullH = 16
+      const repeat = THREE.MathUtils.lerp(4.2, 1.4, t) // low = wide/true-size, high = zoomed
+      flat.repeat.set(repeat, repeat)
+      flat.needsUpdate = true
+
+      // Plane at a fixed close distance, sized to span the whole front
+      // hemisphere; its aspect matches the image so the crop isn't distorted.
+      const planeZ = 8
+      const fullH = 48
       const geo = new THREE.PlaneGeometry(fullH * aspect, fullH)
       const mat = new THREE.MeshBasicMaterial({ map: flat, side: THREE.DoubleSide })
       const plane = new THREE.Mesh(geo, mat)
