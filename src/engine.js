@@ -172,9 +172,9 @@ export class Engine {
     // probe, so the material is rebuilt when it changes.
     if (this.mesh && geomChanged) this.rebuild()
     else if (this.mesh && (matChanged || distanceChanged)) this.mesh.material = this.makeMaterial()
-    // Distance also re-scales the reflected backdrop in the probe, so the probe
-    // must rebake; debounce it (shared with background changes) for smoothness.
-    if (bgChanged || distanceChanged) {
+    // The cube probe only carries neutral highlights now, so only a background
+    // change needs a rebake (distance feeds the screen-space reflection above).
+    if (bgChanged) {
       clearTimeout(this._envTimer)
       this._envTimer = setTimeout(() => this.refreshEnvironment(), 120)
     }
@@ -238,8 +238,11 @@ export class Engine {
       uBgRepeat: { value: tex.repeat.clone() },
       uBgOffset: { value: tex.offset.clone() },
       uZoom: { value: THREE.MathUtils.lerp(1.15, 3.2, t) },
-      uReflMix: { value: THREE.MathUtils.clamp(0.25 + reflectivity * 0.75, 0, 1) },
+      uReflMix: { value: THREE.MathUtils.clamp(0.4 + reflectivity * 0.6, 0, 1) },
       uBlur: { value: (1 - reflectivity) * 5 + t * 1.5 },
+      // The reflected scene shifts with the surface normal so it swirls as the
+      // item turns instead of sitting pinned to the screen.
+      uParallax: { value: 0.13 },
     }
     mat.onBeforeCompile = (shader) => {
       Object.assign(shader.uniforms, uniforms)
@@ -251,18 +254,24 @@ uniform vec2 uBgOffset;
 uniform float uZoom;
 uniform float uReflMix;
 uniform float uBlur;
+uniform float uParallax;
 ` +
         shader.fragmentShader.replace(
           '#include <tonemapping_fragment>',
           `{
+  vec3 _orig = gl_FragColor.rgb;
+  vec3 _vn = normalize(vNormal);
   vec2 _suv = gl_FragCoord.xy / uResolution;
-  vec2 _zuv = (_suv - 0.5) / uZoom + 0.5;
+  vec2 _zuv = (_suv - 0.5) / uZoom + 0.5 + _vn.xy * uParallax;
   vec2 _buv = _zuv * uBgRepeat + uBgOffset;
   vec3 _bg = texture2D(uBgMap, _buv, uBlur).rgb;
   _bg = pow(_bg, vec3(2.2));
-  gl_FragColor.rgb = mix(gl_FragColor.rgb, _bg * diffuseColor.rgb, uReflMix);
-  float _fres = pow(1.0 - clamp(normalize(vNormal).z, 0.0, 1.0), 3.0);
-  gl_FragColor.rgb += _fres * uReflMix * 0.2;
+  vec3 _scene = _bg * diffuseColor.rgb;
+  // Keep the bright studio highlights from the env reflection so the surface
+  // still reads as polished metal, scene fills everywhere else.
+  float _hi = smoothstep(0.5, 1.3, max(_orig.r, max(_orig.g, _orig.b)));
+  vec3 _refl = mix(_scene, _orig, _hi);
+  gl_FragColor.rgb = mix(_orig, _refl, uReflMix);
 }
 #include <tonemapping_fragment>`
         )
@@ -315,66 +324,20 @@ uniform float uBlur;
 
   // Rebuild the sharp reflection probe so metals mirror the *actual* backdrop.
   // The probe scene is surrounded by the background — a flat image plane behind
-  // the camera for a crisp, recognizable frontal mirror, plus an equirect wrap
-  // so the sides aren't black — then captured into a high-res cube the
-  // materials sample. Roughness (the reflectivity dial) blurs it via mipmaps:
-  // a mirror at 0, a soft sheen as it climbs.
+  // the camera, then captured into a cube the materials sample for highlights.
+  // For an image backdrop the cube is just neutral studio panels (so metals get
+  // crisp moving highlights that read as reflective); the actual true-to-size
+  // backdrop reflection is added per-fragment in screen space (see
+  // _attachScreenReflection). Color/transparent backdrops use the same panels.
   refreshEnvironment() {
     const env = new THREE.Scene()
     const bg = this.settings.background
     const trash = []
 
-    if (bg?.kind === 'image' && this._bgTexture?.image) {
-      const img = this._bgTexture.image
-      const aspect = img.width / img.height || 1
-
-      // One large backdrop plane that fully covers the reflection hemisphere so
-      // there's no magnified 360°-wrap leaking into the surface. Distance sets
-      // how large the image reads via UV scale (not plane distance): the low
-      // end shows it ~true-to-size (matching the backdrop the glass refracts),
-      // the high end magnifies a centered crop, edges clamped so they smear
-      // rather than reveal the wrap. (-3..2 → t 0..1.)
-      // Equirect wrap only fills the side/back angles (occluded in front by the
-      // covering plane below), so the surface carries the image's tones rather
-      // than going black as it spins past the plane's edge.
-      const eq = this._bgTexture.clone()
-      eq.mapping = THREE.EquirectangularReflectionMapping
-      eq.repeat.set(1, 1)
-      eq.offset.set(0, 0)
-      eq.colorSpace = THREE.SRGBColorSpace
-      eq.needsUpdate = true
-      env.background = eq
-      trash.push(eq)
-
-      const flat = this._bgTexture.clone()
-      flat.mapping = THREE.UVMapping
-      flat.wrapS = THREE.ClampToEdgeWrapping
-      flat.wrapT = THREE.ClampToEdgeWrapping
-      flat.colorSpace = THREE.SRGBColorSpace
-      flat.center.set(0.5, 0.5)
-      const t = ((this.settings.distance ?? 0) + 3) / 5
-      const repeat = THREE.MathUtils.lerp(4.2, 1.4, t) // low = wide/true-size, high = zoomed
-      flat.repeat.set(repeat, repeat)
-      flat.needsUpdate = true
-
-      // Plane at a fixed close distance, sized to span the whole front
-      // hemisphere; its aspect matches the image so the crop isn't distorted.
-      const planeZ = 8
-      const fullH = 48
-      const geo = new THREE.PlaneGeometry(fullH * aspect, fullH)
-      const mat = new THREE.MeshBasicMaterial({ map: flat, side: THREE.DoubleSide })
-      const plane = new THREE.Mesh(geo, mat)
-      plane.position.set(0, 0, planeZ)
-      plane.lookAt(0, 0, 0)
-      env.add(plane)
-      trash.push(flat, geo, mat)
-    } else if (bg?.kind === 'color') {
-      env.background = new THREE.Color(bg.color)
-      trash.push(...addStudioPanels(env))
-    } else {
-      env.background = new THREE.Color(0x202024) // transparent → neutral grey
-      trash.push(...addStudioPanels(env))
-    }
+    if (bg?.kind === 'color') env.background = new THREE.Color(bg.color)
+    else if (bg?.kind === 'image') env.background = new THREE.Color(0x141418)
+    else env.background = new THREE.Color(0x202024) // transparent → neutral grey
+    trash.push(...addStudioPanels(env))
 
     // Captured from the origin (where the item sits); distance is expressed by
     // the backdrop plane's position above, not by moving the camera or item.
