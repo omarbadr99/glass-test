@@ -71,9 +71,9 @@ function addStudioPanels(scene) {
     scene.add(m)
     trash.push(geo, mat)
   }
-  panel(6, 4, [0, 5, 5], 3) // top key
-  panel(5, 6, [-6, 1, 3], 1.6) // left fill
-  panel(5, 5, [6, -1, -3], 1.2) // right rim
+  panel(6, 4, [0, 5, 5], 2.2) // top key
+  panel(5, 6, [-6, 1, 3], 1.3) // left fill
+  panel(5, 5, [6, -1, -3], 1.0) // right rim
   return trash
 }
 
@@ -223,41 +223,69 @@ export class Engine {
   }
 
   // Rebuild the PMREM reflection probe so metals mirror the *actual* backdrop.
-  // The probe scene is surrounded by the background — the image wrapped as an
-  // equirect, or the solid color — plus a few bright panels for highlights,
-  // then baked to the cube the materials sample. At high reflectivity the
-  // metal shows the real image/color; at low it reads as a soft tinted sheen.
+  // For an image we want a literal mirror, not stretched glare: a flat copy of
+  // the image is placed behind the camera so surfaces facing the viewer reflect
+  // a recognizable copy, while a dim equirect wrap fills the other directions so
+  // the sides aren't black. Colors/transparent keep the studio-panel highlights.
   refreshEnvironment() {
     const pmrem = new THREE.PMREMGenerator(this.renderer)
     const env = new THREE.Scene()
     const bg = this.settings.background
-    let eqClone = null
+    const trash = []
 
     if (bg?.kind === 'image' && this._bgTexture?.image) {
-      // A separate texture instance mapped as an equirect surround; the visible
-      // backdrop keeps its own center-cropped instance untouched.
-      eqClone = this._bgTexture.clone()
-      eqClone.mapping = THREE.EquirectangularReflectionMapping
-      eqClone.repeat.set(1, 1)
-      eqClone.offset.set(0, 0)
-      eqClone.colorSpace = THREE.SRGBColorSpace
-      eqClone.needsUpdate = true
-      env.background = eqClone
+      const img = this._bgTexture.image
+      const aspect = img.width / img.height || 1
+
+      // Ambient fill so every direction carries the image's tones.
+      const eq = this._bgTexture.clone()
+      eq.mapping = THREE.EquirectangularReflectionMapping
+      eq.repeat.set(1, 1)
+      eq.offset.set(0, 0)
+      eq.colorSpace = THREE.SRGBColorSpace
+      eq.needsUpdate = true
+      env.background = eq
+      trash.push(eq)
+
+      // Crisp frontal mirror: a large image plane behind the camera (+Z). A
+      // face whose normal points at the viewer reflects toward +Z and lands on
+      // this plane, showing a clean (mirror-flipped) copy of the image.
+      const flat = this._bgTexture.clone()
+      flat.mapping = THREE.UVMapping
+      flat.repeat.set(1, 1)
+      flat.offset.set(0, 0)
+      flat.colorSpace = THREE.SRGBColorSpace
+      flat.needsUpdate = true
+      const h = 34
+      const geo = new THREE.PlaneGeometry(h * aspect, h)
+      const mat = new THREE.MeshStandardMaterial({
+        color: 0x000000,
+        emissive: 0xffffff,
+        emissiveMap: flat,
+        emissiveIntensity: 1.3,
+        roughness: 1,
+        side: THREE.DoubleSide,
+      })
+      const plane = new THREE.Mesh(geo, mat)
+      plane.position.set(0, 0, 9)
+      plane.lookAt(0, 0, 0)
+      env.add(plane)
+      trash.push(flat, geo, mat)
     } else if (bg?.kind === 'color') {
       env.background = new THREE.Color(bg.color)
+      trash.push(...addStudioPanels(env))
     } else {
       env.background = new THREE.Color(0x202024) // transparent → neutral grey
+      trash.push(...addStudioPanels(env))
     }
 
-    const trash = addStudioPanels(env)
-    const rt = pmrem.fromScene(env, 0.04)
+    const rt = pmrem.fromScene(env, 0.02)
     this._envRT?.dispose()
     this._envRT = rt
     this.scene.environment = rt.texture
 
     pmrem.dispose()
     trash.forEach((d) => d.dispose())
-    eqClone?.dispose()
   }
 
   rebuild() {
