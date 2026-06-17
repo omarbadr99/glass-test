@@ -160,28 +160,34 @@ export class Engine {
       next.tint !== prev.tint ||
       next.tintAmount !== prev.tintAmount ||
       next.reflectivity !== prev.reflectivity
-    const transformChanged = next.size !== prev.size || next.distance !== prev.distance
+    const sizeChanged = next.size !== prev.size
+    const distanceChanged = next.distance !== prev.distance
     const b1 = prev.background
     const b2 = next.background
     const bgChanged = !b1 || b1.kind !== b2.kind || b1.color !== b2.color || b1.src !== b2.src
     this.settings = { ...next }
-    if (bgChanged) {
-      this.setBackground(next.background)
-      // The backdrop itself updates instantly in render(); coalesce the
-      // costlier reflection-probe rebuild so dragging the picker stays smooth.
+    if (bgChanged) this.setBackground(next.background)
+    if (sizeChanged || distanceChanged) this.applyTransform()
+    if (this.mesh && geomChanged) this.rebuild()
+    else if (this.mesh && matChanged) this.mesh.material = this.makeMaterial()
+    // Distance moves the reflection-capture point, so the probe must rebake;
+    // debounce it (shared with background changes) for smooth dragging.
+    if (bgChanged || distanceChanged) {
       clearTimeout(this._envTimer)
       this._envTimer = setTimeout(() => this.refreshEnvironment(), 120)
     }
-    if (this.mesh && geomChanged) this.rebuild()
-    else if (this.mesh && matChanged) this.mesh.material = this.makeMaterial()
-    if (transformChanged) this.applyTransform()
   }
 
-  // Size scales the item; distance slides it along the view axis (off the
-  // backdrop toward the viewer). Both are cheap and skip the geometry rebuild.
+  // Size scales the item. Distance slides it along the view axis but its scale
+  // is compensated so the apparent size barely changes — what shifts is the
+  // reflection: moving off the backdrop changes how large the backdrop reads in
+  // the surface (the capture point moves in refreshEnvironment).
   applyTransform() {
-    if (this.mesh) this.mesh.scale.setScalar(this._baseScale * (this.settings.size ?? 1))
-    this.root.position.z = this.settings.distance ?? 0
+    const d = this.settings.distance ?? 0
+    const camZ = this.camera.position.z
+    const comp = (camZ - d) / camZ
+    if (this.mesh) this.mesh.scale.setScalar(this._baseScale * (this.settings.size ?? 1) * comp)
+    this.root.position.z = d
   }
 
   makeMaterial() {
@@ -277,11 +283,13 @@ export class Engine {
       flat.offset.set(0, 0)
       flat.colorSpace = THREE.SRGBColorSpace
       flat.needsUpdate = true
-      const h = 34
+      // Fixed-distance backdrop plane; the capture point moves toward/away from
+      // it with the distance dial, so the reflection zooms ~2x across the range.
+      const h = 40
       const geo = new THREE.PlaneGeometry(h * aspect, h)
       const mat = new THREE.MeshBasicMaterial({ map: flat, side: THREE.DoubleSide })
       const plane = new THREE.Mesh(geo, mat)
-      plane.position.set(0, 0, 9)
+      plane.position.set(0, 0, 7)
       plane.lookAt(0, 0, 0)
       env.add(plane)
       trash.push(flat, geo, mat)
@@ -292,6 +300,11 @@ export class Engine {
       env.background = new THREE.Color(0x202024) // transparent → neutral grey
       trash.push(...addStudioPanels(env))
     }
+
+    // Capture from the item's standing position so distance from the fixed
+    // backdrop plane changes how large the backdrop reads in the reflection.
+    this._cubeCam.position.z = this.settings.distance ?? 0
+    this._cubeCam.updateMatrixWorld(true)
 
     // Capture linear radiance (no tone map) so the main render tone-maps the
     // reflection exactly once — otherwise the mirror reads muted.

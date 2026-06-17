@@ -510,7 +510,10 @@ export default function App() {
               step={0.1}
               onChange={setDistance}
             />
-            <p className="hint">size scales the item; distance lifts it off the backdrop toward you.</p>
+            <p className="hint">
+              size scales the item. distance floats it off the backdrop — the reflection grows as
+              it moves away, while the item's size stays put.
+            </p>
           </div>
 
           <div className="section">
