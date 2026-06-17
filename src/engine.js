@@ -214,9 +214,10 @@ export class Engine {
       const t = ((this.settings.distance ?? 0) + 3) / 5
       mat.thickness = THREE.MathUtils.lerp(0.4, 3, t)
       mat.ior = THREE.MathUtils.lerp(1.3, 1.7, t)
-    } else if (this.settings.background?.kind === 'image' && this._bgTexture) {
-      // Opaque finishes over an image backdrop reflect it via screen space, so
-      // a flat face shows the backdrop true-to-size (env maps magnify it).
+    } else if (def.metalness > 0.5 && this.settings.background?.kind === 'image' && this._bgTexture) {
+      // Screen-space scene reflection is only right for metals (which *are*
+      // their reflection). Dielectrics like porcelain/obsidian keep their
+      // albedo + studio-panel gloss, otherwise the reflection blacks them out.
       this._attachScreenReflection(mat)
     }
     return mat
