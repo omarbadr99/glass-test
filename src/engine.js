@@ -189,6 +189,7 @@ export class Engine {
 
   makeMaterial() {
     if (this.mesh?.material) this.mesh.material.dispose()
+    this._ssrUniforms = null
     const { material, tint, tintAmount } = this.settings
     const reflectivity = this.settings.reflectivity ?? 0.5
     const def = MATERIALS[material]
@@ -212,8 +213,66 @@ export class Engine {
       const t = ((this.settings.distance ?? 0) + 3) / 5
       mat.thickness = THREE.MathUtils.lerp(0.4, 3, t)
       mat.ior = THREE.MathUtils.lerp(1.3, 1.7, t)
+    } else if (def.metalness > 0.5 && this.settings.background?.kind === 'image' && this._bgTexture) {
+      // Metals over an image keep the bright studio reflection (chrome essence +
+      // highlights) and layer a screen-space true-to-size reflection of the
+      // actual backdrop on top: at lowest distance it's 1:1, higher magnifies,
+      // and reflectivity controls how strongly it takes over toward mirror.
+      this._attachScreenReflection(mat)
     }
     return mat
+  }
+
+  // Screen-space reflection of the backdrop, blended over the studio chrome so
+  // the surface keeps its bright highlights (chrome essence) while showing the
+  // scene at a distance-driven scale (1:1 at the lowest distance → magnified).
+  _attachScreenReflection(mat) {
+    const tex = this._bgTexture
+    const t = ((this.settings.distance ?? 0) + 3) / 5
+    const reflectivity = this.settings.reflectivity ?? 0.5
+    const uniforms = {
+      uBgMap: { value: tex },
+      uResolution: { value: new THREE.Vector2(1, 1) },
+      uBgRepeat: { value: tex.repeat.clone() },
+      uBgOffset: { value: tex.offset.clone() },
+      uZoom: { value: THREE.MathUtils.lerp(1, 3, t) }, // lowest distance = true-to-size
+      uReflMix: { value: THREE.MathUtils.clamp(reflectivity, 0, 1) },
+      uBlur: { value: (1 - reflectivity) * 4 },
+      uParallax: { value: 0.08 },
+    }
+    mat.onBeforeCompile = (shader) => {
+      Object.assign(shader.uniforms, uniforms)
+      shader.fragmentShader =
+        `uniform sampler2D uBgMap;
+uniform vec2 uResolution;
+uniform vec2 uBgRepeat;
+uniform vec2 uBgOffset;
+uniform float uZoom;
+uniform float uReflMix;
+uniform float uBlur;
+uniform float uParallax;
+` +
+        shader.fragmentShader.replace(
+          '#include <tonemapping_fragment>',
+          `{
+  vec3 _orig = gl_FragColor.rgb;
+  vec3 _vn = normalize(vNormal);
+  vec2 _suv = gl_FragCoord.xy / uResolution;
+  vec2 _zuv = (_suv - 0.5) / uZoom + 0.5 + _vn.xy * uParallax;
+  vec2 _buv = _zuv * uBgRepeat + uBgOffset;
+  vec3 _bg = texture2D(uBgMap, _buv, uBlur).rgb;
+  _bg = pow(_bg, vec3(2.2));
+  vec3 _scene = _bg * diffuseColor.rgb;
+  // Keep the bright studio highlights (chrome look); scene fills the rest.
+  float _hi = smoothstep(0.55, 1.3, max(_orig.r, max(_orig.g, _orig.b)));
+  vec3 _refl = mix(_scene, _orig, _hi);
+  gl_FragColor.rgb = mix(_orig, _refl, uReflMix);
+}
+#include <tonemapping_fragment>`
+        )
+    }
+    mat.needsUpdate = true
+    this._ssrUniforms = uniforms
   }
 
   // Resolve a background descriptor: { kind: 'color', color } | { kind:
@@ -249,9 +308,12 @@ export class Engine {
       }
       this._bgTexture?.dispose()
       this._bgTexture = tex
-      // The bitmap now exists: rebuild the reflection probe so metals reflect
-      // the scene (scene.environment updates; materials need no rebuild).
+      // The bitmap now exists: rebuild the probe, and rebuild a metal material
+      // so the screen-space reflection (which needs the texture) attaches.
       this.refreshEnvironment()
+      if (this.mesh && MATERIALS[this.settings.material].metalness > 0.5) {
+        this.mesh.material = this.makeMaterial()
+      }
     })
   }
 
@@ -450,6 +512,9 @@ export class Engine {
       this.scene.background = null
       this.renderer.setClearColor(0x000000, 0)
     }
+    // Screen-space reflection needs the live drawing-buffer size (differs
+    // between the preview and the supersampled bake) to map fragments to uv.
+    if (this._ssrUniforms) this.renderer.getDrawingBufferSize(this._ssrUniforms.uResolution.value)
     this.renderer.render(this.scene, this.camera)
   }
 
