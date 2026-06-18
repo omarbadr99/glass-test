@@ -13,8 +13,63 @@ import { supportedVideoTypes, recordVideo, downloadBlob } from './export'
 
 const LOOP_SECONDS = 2
 
-// CSS that plays the baked sheet. A single row uses one steps() animation; a
-// wrapped grid steps across columns each row and advances rows over the loop.
+// CSS-sphere previews approximating each finish, shown in the material picker.
+const MATERIAL_SWATCH = {
+  chrome: 'radial-gradient(circle at 34% 28%, #ffffff, #cfd3d9 38%, #6b7077 74%, #2b2e33)',
+  gunmetal: 'radial-gradient(circle at 34% 28%, #b6bcc5, #545a63 52%, #23262b)',
+  gold: 'radial-gradient(circle at 34% 28%, #fff6cf, #ffc861 44%, #b9842f 80%, #5e421a)',
+  copper: 'radial-gradient(circle at 34% 28%, #ffdcc6, #ff9466 44%, #b35a36 80%, #5e2f1c)',
+  porcelain: 'radial-gradient(circle at 34% 28%, #ffffff, #f1efe9 56%, #cfcabf)',
+  obsidian: 'radial-gradient(circle at 34% 28%, #565660, #16161a 56%, #050507)',
+  glass:
+    'radial-gradient(circle at 34% 28%, rgba(255,255,255,0.95), rgba(186,206,226,0.55) 52%, rgba(120,150,180,0.35))',
+}
+
+// Turn the subject's vector shapes into a tiny SVG path for the left strip.
+function shapesToIcon(shapes, flipY) {
+  const parts = []
+  const xs = []
+  const ys = []
+  shapes.forEach((s) => {
+    const { shape, holes } = s.extractPoints(22)
+    const ring = (pts) => {
+      if (!pts.length) return ''
+      return (
+        pts
+          .map((p, i) => {
+            const x = p.x
+            const y = flipY ? -p.y : p.y
+            xs.push(x)
+            ys.push(y)
+            return `${i === 0 ? 'M' : 'L'}${x.toFixed(2)} ${y.toFixed(2)}`
+          })
+          .join(' ') + ' Z'
+      )
+    }
+    parts.push(ring(shape))
+    holes.forEach((h) => parts.push(ring(h)))
+  })
+  const minX = Math.min(...xs)
+  const maxX = Math.max(...xs)
+  const minY = Math.min(...ys)
+  const maxY = Math.max(...ys)
+  const w = maxX - minX || 1
+  const h = maxY - minY || 1
+  const pad = Math.max(w, h) * 0.1
+  return { d: parts.join(' '), vb: `${minX - pad} ${minY - pad} ${w + 2 * pad} ${h + 2 * pad}` }
+}
+
+// Precompute preset icons once (presets are y-up math coords → flip for SVG).
+const PRESET_ICONS = PRESETS.map((p) => ({ key: p.key, ...shapesToIcon(p.make(), true) }))
+
+function SubjectIcon({ icon }) {
+  return (
+    <svg viewBox={icon.vb} className="subject-svg" aria-hidden="true">
+      <path d={icon.d} fillRule="evenodd" />
+    </svg>
+  )
+}
+
 function cssSnippet(frames, size, cols, rows) {
   const sheetW = cols * size
   const sheetH = rows * size
@@ -53,13 +108,14 @@ function downloadCanvas(canvas, filename, done) {
   }, 'image/png')
 }
 
-function Chips({ options, value, onChange }) {
+// iOS-style segmented control.
+function Segmented({ options, value, onChange }) {
   return (
-    <div className="chips">
+    <div className="segmented">
       {options.map((o) => (
         <button
           key={o}
-          className={`chip${o === value ? ' active' : ''}`}
+          className={`segment${o === value ? ' on' : ''}`}
           onClick={() => onChange(o)}
         >
           {o}
@@ -71,10 +127,10 @@ function Chips({ options, value, onChange }) {
 
 function Slider({ label, value, display, min, max, step, onChange }) {
   return (
-    <div className="slider">
-      <div className="slider-head">
+    <div className="field">
+      <div className="field-head">
         <span>{label}</span>
-        <span>{display ?? value}</span>
+        <span className="field-val">{display ?? value}</span>
       </div>
       <input
         type="range"
@@ -88,12 +144,65 @@ function Slider({ label, value, display, min, max, step, onChange }) {
   )
 }
 
+// Playback transport under the frame. Runs its own rAF to track the shared
+// playhead so the rest of the app doesn't re-render every frame.
+function Transport({ playingRef, playheadRef }) {
+  const [pos, setPos] = useState(0)
+  const [playing, setPlaying] = useState(true)
+  useEffect(() => {
+    let raf
+    const tick = () => {
+      setPos(playheadRef.current)
+      raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [playheadRef])
+
+  const toggle = () => {
+    const next = !playing
+    setPlaying(next)
+    playingRef.current = next
+  }
+  const scrub = (e) => {
+    const v = Number(e.target.value)
+    playheadRef.current = v
+    setPos(v)
+    if (playing) {
+      setPlaying(false)
+      playingRef.current = false
+    }
+  }
+
+  return (
+    <div className="transport">
+      <button className="play" onClick={toggle} aria-label={playing ? 'pause' : 'play'}>
+        {playing ? (
+          <svg viewBox="0 0 24 24">
+            <path d="M6 5h4v14H6zM14 5h4v14h-4z" />
+          </svg>
+        ) : (
+          <svg viewBox="0 0 24 24">
+            <path d="M8 5v14l11-7z" />
+          </svg>
+        )}
+      </button>
+      <input className="scrub" type="range" min={0} max={1} step={0.001} value={pos} onChange={scrub} />
+      <span className="time">
+        {(pos * LOOP_SECONDS).toFixed(1)}s / {LOOP_SECONDS.toFixed(1)}s
+      </span>
+    </div>
+  )
+}
+
 export default function App() {
   const canvasRef = useRef(null)
   const viewportRef = useRef(null)
   const fileRef = useRef(null)
   const bgFileRef = useRef(null)
   const pausedRef = useRef(false)
+  const playingRef = useRef(true)
+  const playheadRef = useRef(0)
   const [engine, setEngine] = useState(null)
 
   const [subject, setSubject] = useState('star')
@@ -116,15 +225,17 @@ export default function App() {
   const [frames, setFrames] = useState(48)
   const [frameSize, setFrameSize] = useState(256)
 
-  // Collapse the three background controls into one descriptor for the engine.
   const background = useMemo(() => {
     if (bgKind === 'transparent') return { kind: 'transparent' }
     if (bgKind === 'image' && bgImage) return { kind: 'image', src: bgImage.src }
     return { kind: 'color', color: bgColor }
   }, [bgKind, bgColor, bgImage])
 
-  // Available share formats: the CSS-playable PNG sheet plus whatever video
-  // containers this browser can actually encode (mp4 preferred, webm fallback).
+  const uploadIcon = useMemo(
+    () => (upload ? shapesToIcon(upload.shapes, false) : null),
+    [upload]
+  )
+
   const videoTypes = useMemo(() => supportedVideoTypes(), [])
   const formats = useMemo(() => ['sheet', ...videoTypes.map((v) => v.format)], [videoTypes])
   const [format, setFormat] = useState('sheet')
@@ -143,10 +254,17 @@ export default function App() {
     ro.observe(viewportRef.current)
 
     let raf
+    let last = performance.now()
     const tick = (now) => {
-      // Paused while a video records, so the recorder captures only the
-      // dedicated export frames and not the live preview poses.
-      if (!pausedRef.current) eng.render((now / (LOOP_SECONDS * 1000)) % 1)
+      // Paused while a video records (recorder drives its own frames).
+      if (!pausedRef.current) {
+        const dt = now - last
+        if (playingRef.current) {
+          playheadRef.current = (playheadRef.current + dt / (LOOP_SECONDS * 1000)) % 1
+        }
+        eng.render(playheadRef.current)
+      }
+      last = now
       raf = requestAnimationFrame(tick)
     }
     raf = requestAnimationFrame(tick)
@@ -159,7 +277,6 @@ export default function App() {
     }
   }, [])
 
-  // Keep the scene in sync with the controls.
   useEffect(() => {
     if (!engine) return
     if (subject === 'upload' && upload) engine.setShapes(upload.shapes, false)
@@ -302,7 +419,7 @@ export default function App() {
   }
 
   const bake = () => {
-    if (busy) return
+    if (busy || !engine) return
     if (format === 'sheet') bakeSheet()
     else bakeVideo()
   }
@@ -315,80 +432,110 @@ export default function App() {
     })
   }
 
-  const bakeLabel = busy
-    ? format === 'sheet'
-      ? 'baking…'
-      : 'recording…'
-    : format === 'sheet'
-      ? 'bake sheet + poster'
-      : `bake ${format}`
+  const exportLabel = busy ? (format === 'sheet' ? 'Baking…' : 'Recording…') : 'Export'
 
   return (
     <div className="app">
-      <header>
-        <h1>flipbook</h1>
-        <p>
-          stage an object, give it a finish and a motion — bake it into a strip of frames, a video,
-          or (soon) a gif any website can play.
-        </p>
+      <header className="topbar">
+        <div className="brand">
+          <span className="brand-dot" />
+          flipbook
+        </div>
+        <button className="btn-primary" onClick={bake} disabled={!engine || busy}>
+          {exportLabel}
+        </button>
       </header>
 
-      <main>
-        <section className="stage">
-          <div className="viewport" ref={viewportRef}>
+      <div className="workspace">
+        {/* LEFT — subject strip */}
+        <aside className="rail-left">
+          <div className="rail-label">Shapes</div>
+          <div className="shape-strip">
+            {PRESET_ICONS.map((p) => (
+              <button
+                key={p.key}
+                className={`shape-btn${subject === p.key ? ' active' : ''}`}
+                onClick={() => setSubject(p.key)}
+                title={p.key}
+              >
+                <SubjectIcon icon={p} />
+              </button>
+            ))}
+            {upload && uploadIcon && (
+              <button
+                className={`shape-btn${subject === 'upload' ? ' active' : ''}`}
+                onClick={() => setSubject('upload')}
+                title={upload.name}
+              >
+                <SubjectIcon icon={uploadIcon} />
+              </button>
+            )}
+            <button
+              className="shape-btn add"
+              onClick={() => fileRef.current.click()}
+              title="upload svg"
+            >
+              +
+            </button>
+          </div>
+          {uploadError && <p className="error">{uploadError}</p>}
+          <input ref={fileRef} type="file" accept=".svg,image/svg+xml" hidden onChange={onUpload} />
+        </aside>
+
+        {/* CENTER — frame, timeline, frames drawer */}
+        <main className="stage">
+          <div className={`frame${bgKind === 'transparent' ? ' checker' : ''}`} ref={viewportRef}>
             <canvas ref={canvasRef} />
           </div>
-          <div className="filmstrip">
-            {preview ? (
-              <img src={preview.url} alt="baked frame strip preview" />
-            ) : (
-              <div className="strip-empty" />
-            )}
-          </div>
-          <p className="caption">
-            {preview ? `preview · ${frames} frames · 96px · ${preview.kb}KB` : 'baking preview…'}
-          </p>
-        </section>
 
-        <aside className="panel">
-          <div className="section">
-            <h2>subject</h2>
-            <div className="chips">
-              {PRESETS.map((p) => (
+          <Transport playingRef={playingRef} playheadRef={playheadRef} />
+
+          <details className="frames-drawer">
+            <summary>
+              Frames
+              <span className="muted">
+                {preview ? ` · ${frames} · 96px · ${preview.kb}KB` : ' · baking…'}
+              </span>
+            </summary>
+            <div className="filmstrip">
+              {preview ? (
+                <img src={preview.url} alt="baked frame strip preview" />
+              ) : (
+                <div className="strip-empty" />
+              )}
+            </div>
+          </details>
+        </main>
+
+        {/* RIGHT — controls */}
+        <aside className="rail-right">
+          <div className="card">
+            <div className="card-title">Material</div>
+            <div className="mat-grid">
+              {MATERIAL_NAMES.map((m) => (
                 <button
-                  key={p.key}
-                  className={`chip${subject === p.key ? ' active' : ''}`}
-                  onClick={() => setSubject(p.key)}
+                  key={m}
+                  className={`mat${m === material ? ' active' : ''}`}
+                  onClick={() => setMaterial(m)}
                 >
-                  {p.key}
+                  <span className="mat-ball" style={{ background: MATERIAL_SWATCH[m] }} />
+                  <span className="mat-name">{m}</span>
                 </button>
               ))}
             </div>
-            <div className="chips">
-              <button className="chip ghost" onClick={() => fileRef.current.click()}>
-                {upload && subject === 'upload' ? `svg: ${upload.name}` : 'upload svg'}
-              </button>
-              {upload && subject !== 'upload' && (
-                <button className="chip" onClick={() => setSubject('upload')}>
-                  svg: {upload.name}
-                </button>
-              )}
-            </div>
-            {uploadError && <p className="error">{uploadError}</p>}
-            <input
-              ref={fileRef}
-              type="file"
-              accept=".svg,image/svg+xml"
-              hidden
-              onChange={onUpload}
-            />
-          </div>
-
-          <div className="section">
-            <h2>material</h2>
-            <Chips options={MATERIAL_NAMES} value={material} onChange={setMaterial} />
             <Slider
-              label="depth"
+              label="Reflectivity"
+              value={reflectivity}
+              display={
+                reflectivity <= 0.04 ? 'matte' : reflectivity >= 0.96 ? 'mirror' : `${Math.round(reflectivity * 100)}%`
+              }
+              min={0}
+              max={1}
+              step={0.02}
+              onChange={setReflectivity}
+            />
+            <Slider
+              label="Depth"
               value={depth}
               display={depth.toFixed(2)}
               min={0.04}
@@ -397,7 +544,7 @@ export default function App() {
               onChange={setDepth}
             />
             <Slider
-              label="bevel"
+              label="Bevel"
               value={bevel}
               display={bevel.toFixed(3)}
               min={0}
@@ -405,13 +552,12 @@ export default function App() {
               step={0.005}
               onChange={setBevel}
             />
-            <div className="tint-row">
-              <span className="motion-label">tint</span>
+            <div className="field inline">
+              <span>Tint</span>
               <label className="swatch picker" style={{ background: tint }}>
                 <input type="color" value={tint} onChange={(e) => setTint(e.target.value)} />
               </label>
               <input
-                className="tint-range"
                 type="range"
                 min={0}
                 max={1}
@@ -419,21 +565,12 @@ export default function App() {
                 value={tintAmount}
                 onChange={(e) => setTintAmount(Number(e.target.value))}
               />
-              <span className="tint-val">{Math.round(tintAmount * 100)}%</span>
+              <span className="field-val">{Math.round(tintAmount * 100)}%</span>
             </div>
-            <Slider
-              label="reflectivity"
-              value={reflectivity}
-              display={reflectivity <= 0.04 ? 'matte' : reflectivity >= 0.96 ? 'mirror' : `${Math.round(reflectivity * 100)}%`}
-              min={0}
-              max={1}
-              step={0.02}
-              onChange={setReflectivity}
-            />
           </div>
 
-          <div className="section">
-            <h2>background</h2>
+          <div className="card">
+            <div className="card-title">Background</div>
             <div className="swatches">
               <button
                 className={`swatch checker${bgKind === 'transparent' ? ' active' : ''}`}
@@ -466,34 +603,28 @@ export default function App() {
                 />
               </label>
             </div>
-            <div className="chips">
-              <button className="chip ghost" onClick={() => bgFileRef.current.click()}>
-                {bgImage ? `image: ${bgImage.name}` : 'upload image'}
+            <div className="row">
+              <button className="btn-ghost" onClick={() => bgFileRef.current.click()}>
+                {bgImage ? `Image: ${bgImage.name}` : 'Upload image'}
               </button>
               {bgImage && bgKind !== 'image' && (
-                <button className="chip" onClick={() => setBgKind('image')}>
-                  use image
+                <button className="btn-ghost" onClick={() => setBgKind('image')}>
+                  Use image
                 </button>
               )}
             </div>
-            <input
-              ref={bgFileRef}
-              type="file"
-              accept="image/*"
-              hidden
-              onChange={onBgUpload}
-            />
+            <input ref={bgFileRef} type="file" accept="image/*" hidden onChange={onBgUpload} />
             <p className="hint">
               {bgKind === 'transparent'
-                ? 'transparent — png/poster keep alpha; video falls back to black.'
-                : 'baked into every export.'}
+                ? 'Transparent — PNG keeps alpha; video falls back to black.'
+                : 'Baked into every export.'}
             </p>
           </div>
 
-          <div className="section">
-            <h2>placement</h2>
+          <div className="card">
+            <div className="card-title">Placement</div>
             <Slider
-              label="size"
+              label="Size"
               value={size}
               display={`${Math.round(size * 100)}%`}
               min={0.4}
@@ -502,7 +633,7 @@ export default function App() {
               onChange={setSize}
             />
             <Slider
-              label="distance"
+              label="Distance"
               value={distance}
               display={distance === 0 ? 'flat' : distance > 0 ? `+${distance.toFixed(1)}` : distance.toFixed(1)}
               min={-3}
@@ -510,34 +641,29 @@ export default function App() {
               step={0.1}
               onChange={setDistance}
             />
-            <p className="hint">
-              size scales the item. distance keeps the item put but changes what the backdrop does
-              in the surface: lowest reflects/refracts it ~true-to-size, higher magnifies it
-              (and bends glass more).
-            </p>
           </div>
 
-          <div className="section">
-            <h2>motion</h2>
-            <div className="motion-row">
-              <span className="motion-label">spin</span>
-              <Chips options={SPIN_MOTIONS} value={spin} onChange={setSpin} />
+          <div className="card">
+            <div className="card-title">Motion</div>
+            <div className="field inline">
+              <span>Spin</span>
+              <Segmented options={SPIN_MOTIONS} value={spin} onChange={setSpin} />
             </div>
-            <div className="motion-row">
-              <span className="motion-label">object</span>
-              <Chips options={OBJECT_MOTIONS} value={objectMotion} onChange={setObjectMotion} />
+            <div className="field inline">
+              <span>Object</span>
+              <Segmented options={OBJECT_MOTIONS} value={objectMotion} onChange={setObjectMotion} />
             </div>
-            <div className="motion-row">
-              <span className="motion-label">light</span>
-              <Chips options={LIGHT_MOTIONS} value={lightMotion} onChange={setLightMotion} />
+            <div className="field inline">
+              <span>Light</span>
+              <Segmented options={LIGHT_MOTIONS} value={lightMotion} onChange={setLightMotion} />
             </div>
           </div>
 
-          <div className="section">
-            <h2>film</h2>
-            <Slider label="frames" value={frames} min={8} max={96} step={4} onChange={setFrames} />
+          <div className="card">
+            <div className="card-title">Export</div>
+            <Slider label="Frames" value={frames} min={8} max={96} step={4} onChange={setFrames} />
             <Slider
-              label="frame size"
+              label="Frame size"
               value={frameSize}
               display={`${frameSize}px`}
               min={64}
@@ -545,72 +671,41 @@ export default function App() {
               step={64}
               onChange={setFrameSize}
             />
-            <div className="tint-row">
-              <span className="motion-label">custom</span>
-              <input
-                className="num"
-                type="number"
-                min={64}
-                max={1024}
-                step={1}
-                value={frameSize}
-                onChange={(e) => {
-                  const v = Math.round(Number(e.target.value) || 0)
-                  setFrameSize(Math.max(64, Math.min(1024, v)))
-                }}
-              />
-              <span className="tint-val">px</span>
+            <div className="field inline">
+              <span>Format</span>
+              <Segmented options={formats} value={format} onChange={setFormat} />
             </div>
-          </div>
-
-          <div className="section">
-            <h2>share as</h2>
-            <Chips options={formats} value={format} onChange={setFormat} />
             <p className="hint">
               {format === 'sheet'
                 ? grid.rows > 1
-                  ? `sharp & CSS-playable · ${grid.cols}×${grid.rows} grid sheet`
-                  : 'sharp & CSS-playable · single-row strip'
-                : 'smallest & smooth · best for sharing'}
+                  ? `Sharp & CSS-playable · ${grid.cols}×${grid.rows} grid sheet`
+                  : 'Sharp & CSS-playable · single-row strip'
+                : 'Smallest & smooth · best for sharing'}
             </p>
+            <button className="btn-primary wide" onClick={bake} disabled={!engine || busy}>
+              {busy ? exportLabel : format === 'sheet' ? 'Bake sheet + poster' : `Bake ${format}`}
+            </button>
+
+            {baked?.format === 'sheet' && (
+              <div className="result">
+                <p className="hint">
+                  Downloaded sheet.png ({baked.width}×{baked.height} · {baked.kb}KB) and poster.png.
+                </p>
+                <pre>{cssSnippet(frames, frameSize, baked.cols, baked.rows)}</pre>
+                <button className="btn-ghost" onClick={copyCss}>
+                  {copied ? 'Copied' : 'Copy CSS'}
+                </button>
+              </div>
+            )}
+            {baked?.format === 'video' && (
+              <p className="hint result">
+                Downloaded loop.{baked.ext} ({baked.kb}KB) — a {LOOP_SECONDS}s seamless loop.
+              </p>
+            )}
+            {baked?.format === 'error' && <p className="error result">{baked.message}</p>}
           </div>
-
-          <button className="bake" onClick={bake} disabled={!engine || busy}>
-            {bakeLabel}
-          </button>
-
-          {baked?.format === 'sheet' && (
-            <div className="section result">
-              <h2>baked</h2>
-              <p className="hint">
-                downloaded sheet.png ({baked.width}×{baked.height} · {baked.kb}KB) and poster.png.
-                drop them next to your html and paste this css:
-              </p>
-              <pre>{cssSnippet(frames, frameSize, baked.cols, baked.rows)}</pre>
-              <button className="chip" onClick={copyCss}>
-                {copied ? 'copied' : 'copy css'}
-              </button>
-            </div>
-          )}
-
-          {baked?.format === 'video' && (
-            <div className="section result">
-              <h2>baked</h2>
-              <p className="hint">
-                downloaded loop.{baked.ext} ({baked.kb}KB) — a {LOOP_SECONDS}s seamless loop ready
-                to post anywhere.
-              </p>
-            </div>
-          )}
-
-          {baked?.format === 'error' && (
-            <div className="section result">
-              <h2>export failed</h2>
-              <p className="error">{baked.message}</p>
-            </div>
-          )}
         </aside>
-      </main>
+      </div>
     </div>
   )
 }
