@@ -166,23 +166,31 @@ body {
 
 .stage {
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: flex-start;
-  gap: 16px;
-  overflow-y: auto;
+  gap: 14px;
+}
+
+/* Flexes to fill the leftover height; the frame is sized in JS to the largest
+   box of the chosen aspect ratio that fits here. */
+.frame-area {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .frame {
-  width: 100%;
-  max-width: 600px;
-  aspect-ratio: 1;
   border-radius: 22px;
   overflow: hidden;
   background: #fff;
   border: 1px solid var(--line);
   box-shadow: var(--shadow);
+  flex-shrink: 0;
 }
 
 .frame.checker {
@@ -201,11 +209,66 @@ body {
   height: 100%;
 }
 
+/* ratio bar */
+
+.ratio-bar {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.ratio {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  width: 56px;
+  padding: 8px 4px 6px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.ratio:hover {
+  background: var(--panel);
+}
+
+.ratio.on {
+  background: var(--panel);
+  border-color: var(--line);
+  box-shadow: var(--shadow);
+}
+
+.ratio-box {
+  height: 24px;
+  width: auto;
+  max-width: 42px;
+  box-sizing: border-box;
+  border: 1.5px solid var(--line-2);
+  border-radius: 3px;
+}
+
+.ratio.on .ratio-box {
+  border-color: var(--cta);
+  background: var(--cta);
+}
+
+.ratio-label {
+  font-size: 10px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.ratio.on .ratio-label {
+  color: var(--ink);
+  font-weight: 600;
+}
+
 /* transport */
 
 .transport {
   width: 100%;
-  max-width: 600px;
   display: flex;
   align-items: center;
   gap: 14px;
@@ -251,7 +314,6 @@ body {
 
 .frames-drawer {
   width: 100%;
-  max-width: 600px;
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 14px;

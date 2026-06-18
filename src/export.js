@@ -24,10 +24,10 @@ export function supportedVideoTypes() {
 // `render(t)` drives the engine for each frame (t in [0, 1)); the canvas is
 // captured as a stream while we step it in real time. Always opaque — video
 // can't carry transparency, hence the always-baked-in background.
-export function recordVideo(engine, { size, durationMs, mime, fps = 60, render }) {
+export function recordVideo(engine, { width, height, durationMs, mime, fps = 60, render }) {
   return new Promise((resolve, reject) => {
     engine.renderer.setPixelRatio(1)
-    engine.renderer.setSize(size, size, false)
+    engine.renderer.setSize(width, height, false)
 
     const stream = engine.renderer.domElement.captureStream(fps)
     const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 12_000_000 })

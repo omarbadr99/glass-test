@@ -135,15 +135,20 @@ export class Engine {
     this._bgColor = new THREE.Color()
     this._bgTexture = null
     this._bgSrc = null
-    this.viewSize = 0
+    this.viewW = 0
+    this.viewH = 0
 
     this.refreshEnvironment()
   }
 
-  setViewSize(px) {
-    this.viewSize = px
+  // Size the live view to w×h px and match the camera aspect to the frame.
+  setView(w, h) {
+    this.viewW = w
+    this.viewH = h
     this.renderer.setPixelRatio(window.devicePixelRatio || 1)
-    this.renderer.setSize(px, px, false)
+    this.renderer.setSize(w, h, false)
+    this.camera.aspect = w / h
+    this.camera.updateProjectionMatrix()
   }
 
   setShapes(shapes, yUp = true) {
@@ -519,37 +524,37 @@ uniform float uParallax;
   }
 
   // Renders `frames` evenly spaced poses, each at 2x and downsampled for clean
-  // edges, into a sprite sheet. When a single row of `size`-px cells would be
+  // edges, into a sprite sheet of cellW×cellH cells. When a single row would be
   // wider than `maxDim`, the frames wrap into a grid. Returns the canvas plus
   // its grid shape so callers can build matching CSS.
-  bakeSheet(frames, size, maxDim = MAX_SHEET_DIM) {
-    const { cols, rows } = computeGrid(frames, size, maxDim)
+  bakeSheet(frames, cellW, cellH, maxDim = MAX_SHEET_DIM) {
+    const { cols, rows } = computeGrid(frames, cellW, maxDim)
     const sheet = document.createElement('canvas')
-    sheet.width = cols * size
-    sheet.height = rows * size
+    sheet.width = cols * cellW
+    sheet.height = rows * cellH
     const ctx = sheet.getContext('2d')
     ctx.imageSmoothingQuality = 'high'
 
     this.renderer.setPixelRatio(1)
-    this.renderer.setSize(size * 2, size * 2, false)
+    this.renderer.setSize(cellW * 2, cellH * 2, false)
     for (let i = 0; i < frames; i++) {
       this.render(i / frames)
-      const dx = (i % cols) * size
-      const dy = Math.floor(i / cols) * size
-      ctx.drawImage(this.renderer.domElement, 0, 0, size * 2, size * 2, dx, dy, size, size)
+      const dx = (i % cols) * cellW
+      const dy = Math.floor(i / cols) * cellH
+      ctx.drawImage(this.renderer.domElement, 0, 0, cellW * 2, cellH * 2, dx, dy, cellW, cellH)
     }
-    if (this.viewSize) this.setViewSize(this.viewSize)
+    if (this.viewW) this.setView(this.viewW, this.viewH)
     return { canvas: sheet, cols, rows }
   }
 
   // Convenience wrapper that forces a single uncapped row — used for the small
   // live preview strip, which never approaches the sheet-size limit.
-  bakeStrip(frames, size) {
-    return this.bakeSheet(frames, size, Infinity).canvas
+  bakeStrip(frames, cellW, cellH) {
+    return this.bakeSheet(frames, cellW, cellH, Infinity).canvas
   }
 
-  bakePoster(size = 1024) {
-    return this.bakeSheet(1, size).canvas
+  bakePoster(w, h) {
+    return this.bakeSheet(1, w, h).canvas
   }
 
   dispose() {

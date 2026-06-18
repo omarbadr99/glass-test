@@ -70,14 +70,14 @@ function SubjectIcon({ icon }) {
   )
 }
 
-function cssSnippet(frames, size, cols, rows) {
-  const sheetW = cols * size
-  const sheetH = rows * size
+function cssSnippet(frames, w, h, cols, rows) {
+  const sheetW = cols * w
+  const sheetH = rows * h
   if (rows === 1) {
     return `.loop {
-  width: ${size}px;
-  height: ${size}px;
-  background: url("sheet.png") 0 0 / ${sheetW}px ${size}px no-repeat;
+  width: ${w}px;
+  height: ${h}px;
+  background: url("sheet.png") 0 0 / ${sheetW}px ${h}px no-repeat;
   animation: loop ${LOOP_SECONDS}s steps(${frames}) infinite;
 }
 @keyframes loop {
@@ -86,8 +86,8 @@ function cssSnippet(frames, size, cols, rows) {
   }
   const rowSeconds = ((LOOP_SECONDS * cols) / frames).toFixed(3)
   return `.loop {
-  width: ${size}px;
-  height: ${size}px;
+  width: ${w}px;
+  height: ${h}px;
   background: url("sheet.png") 0 0 / ${sheetW}px ${sheetH}px no-repeat;
   animation:
     loop-x ${rowSeconds}s steps(${cols}) infinite,
@@ -100,6 +100,16 @@ function cssSnippet(frames, size, cols, rows) {
   to { background-position-y: -${sheetH}px; }
 }`
 }
+
+// Frame aspect ratios for the viewport / export.
+const RATIOS = {
+  '1:1': [1, 1],
+  '16:9': [16, 9],
+  '9:16': [9, 16],
+  '4:3': [4, 3],
+  '3:4': [3, 4],
+}
+const RATIO_KEYS = Object.keys(RATIOS)
 
 function downloadCanvas(canvas, filename, done) {
   canvas.toBlob((blob) => {
@@ -198,12 +208,15 @@ function Transport({ playingRef, playheadRef }) {
 export default function App() {
   const canvasRef = useRef(null)
   const viewportRef = useRef(null)
+  const frameAreaRef = useRef(null)
   const fileRef = useRef(null)
   const bgFileRef = useRef(null)
   const pausedRef = useRef(false)
   const playingRef = useRef(true)
   const playheadRef = useRef(0)
   const [engine, setEngine] = useState(null)
+  const [frameRatio, setFrameRatio] = useState('1:1')
+  const [frameBox, setFrameBox] = useState({ w: 0, h: 0 })
 
   const [subject, setSubject] = useState('star')
   const [upload, setUpload] = useState(null) // { name, shapes }
@@ -231,6 +244,16 @@ export default function App() {
     return { kind: 'color', color: bgColor }
   }, [bgKind, bgColor, bgImage])
 
+  // Frame aspect → export/preview cell dimensions (frameSize is the long side).
+  const [rw, rh] = RATIOS[frameRatio]
+  const frameAr = rw / rh
+  const cellW = frameAr >= 1 ? frameSize : Math.round(frameSize * frameAr)
+  const cellH = frameAr >= 1 ? Math.round(frameSize / frameAr) : frameSize
+  const posterW = frameAr >= 1 ? 1024 : Math.round(1024 * frameAr)
+  const posterH = frameAr >= 1 ? Math.round(1024 / frameAr) : 1024
+  const previewW = frameAr >= 1 ? 96 : Math.round(96 * frameAr)
+  const previewH = frameAr >= 1 ? Math.round(96 / frameAr) : 96
+
   const uploadIcon = useMemo(
     () => (upload ? shapesToIcon(upload.shapes, false) : null),
     [upload]
@@ -245,14 +268,9 @@ export default function App() {
   const [busy, setBusy] = useState(false)
   const [copied, setCopied] = useState(false)
 
-  // Create the engine, size it to its container, run the preview loop.
+  // Create the engine and run the preview loop.
   useEffect(() => {
     const eng = new Engine(canvasRef.current)
-    const fit = () => eng.setViewSize(Math.min(viewportRef.current.clientWidth, 720))
-    fit()
-    const ro = new ResizeObserver(fit)
-    ro.observe(viewportRef.current)
-
     let raf
     let last = performance.now()
     const tick = (now) => {
@@ -271,11 +289,37 @@ export default function App() {
     setEngine(eng)
     return () => {
       cancelAnimationFrame(raf)
-      ro.disconnect()
       eng.dispose()
       setEngine(null)
     }
   }, [])
+
+  // Fit the frame to the largest box that matches the aspect ratio and fills
+  // the available area; re-runs when the ratio changes or the area resizes.
+  useEffect(() => {
+    if (!engine) return
+    const area = frameAreaRef.current
+    const [arw, arh] = RATIOS[frameRatio]
+    const ar = arw / arh
+    const fit = () => {
+      const availW = area.clientWidth
+      const availH = area.clientHeight
+      let w = availW
+      let h = w / ar
+      if (h > availH) {
+        h = availH
+        w = h * ar
+      }
+      w = Math.max(64, Math.floor(w))
+      h = Math.max(64, Math.floor(h))
+      setFrameBox({ w, h })
+      engine.setView(Math.min(w, 1440), Math.min(h, 1440))
+    }
+    fit()
+    const ro = new ResizeObserver(fit)
+    ro.observe(area)
+    return () => ro.disconnect()
+  }, [engine, frameRatio])
 
   useEffect(() => {
     if (!engine) return
@@ -322,7 +366,7 @@ export default function App() {
   useEffect(() => {
     if (!engine) return
     const id = setTimeout(() => {
-      const strip = engine.bakeStrip(frames, 96)
+      const strip = engine.bakeStrip(frames, previewW, previewH)
       strip.toBlob((blob) => {
         setPreview((prev) => {
           if (prev) URL.revokeObjectURL(prev.url)
@@ -348,6 +392,8 @@ export default function App() {
     objectMotion,
     lightMotion,
     frames,
+    previewW,
+    previewH,
   ])
 
   const onUpload = (e) => {
@@ -381,7 +427,7 @@ export default function App() {
   }
 
   const bakeSheet = () => {
-    const { canvas, cols, rows } = engine.bakeSheet(frames, frameSize)
+    const { canvas, cols, rows } = engine.bakeSheet(frames, cellW, cellH)
     downloadCanvas(canvas, 'sheet.png', (blob) => {
       setBaked({
         format: 'sheet',
@@ -390,9 +436,12 @@ export default function App() {
         height: canvas.height,
         cols,
         rows,
+        cw: cellW,
+        ch: cellH,
+        frames,
       })
     })
-    downloadCanvas(engine.bakePoster(1024), 'poster.png')
+    downloadCanvas(engine.bakePoster(posterW, posterH), 'poster.png')
   }
 
   const bakeVideo = async () => {
@@ -402,7 +451,8 @@ export default function App() {
     pausedRef.current = true
     try {
       const blob = await recordVideo(engine, {
-        size: frameSize,
+        width: cellW,
+        height: cellH,
         durationMs: LOOP_SECONDS * 1000,
         mime: type.mime,
         render: (t) => engine.render(t),
@@ -413,7 +463,7 @@ export default function App() {
       setBaked({ format: 'error', message: err.message })
     } finally {
       pausedRef.current = false
-      if (engine.viewSize) engine.setViewSize(engine.viewSize)
+      if (engine.viewW) engine.setView(engine.viewW, engine.viewH)
       setBusy(false)
     }
   }
@@ -424,9 +474,10 @@ export default function App() {
     else bakeVideo()
   }
 
-  const grid = computeGrid(frames, frameSize)
+  const grid = computeGrid(frames, cellW)
   const copyCss = () => {
-    navigator.clipboard.writeText(cssSnippet(frames, frameSize, grid.cols, grid.rows)).then(() => {
+    const b = baked?.format === 'sheet' ? baked : { frames, cw: cellW, ch: cellH, cols: grid.cols, rows: grid.rows }
+    navigator.clipboard.writeText(cssSnippet(b.frames, b.cw, b.ch, b.cols, b.rows)).then(() => {
       setCopied(true)
       setTimeout(() => setCopied(false), 1500)
     })
@@ -482,10 +533,33 @@ export default function App() {
           <input ref={fileRef} type="file" accept=".svg,image/svg+xml" hidden onChange={onUpload} />
         </aside>
 
-        {/* CENTER — frame, timeline, frames drawer */}
+        {/* CENTER — frame, ratio bar, timeline, frames drawer */}
         <main className="stage">
-          <div className={`frame${bgKind === 'transparent' ? ' checker' : ''}`} ref={viewportRef}>
-            <canvas ref={canvasRef} />
+          <div className="frame-area" ref={frameAreaRef}>
+            <div
+              className={`frame${bgKind === 'transparent' ? ' checker' : ''}`}
+              ref={viewportRef}
+              style={{ width: frameBox.w || undefined, height: frameBox.h || undefined }}
+            >
+              <canvas ref={canvasRef} />
+            </div>
+          </div>
+
+          <div className="ratio-bar">
+            {RATIO_KEYS.map((key) => {
+              const [w, h] = RATIOS[key]
+              return (
+                <button
+                  key={key}
+                  className={`ratio${frameRatio === key ? ' on' : ''}`}
+                  onClick={() => setFrameRatio(key)}
+                  title={key}
+                >
+                  <span className="ratio-box" style={{ aspectRatio: `${w} / ${h}` }} />
+                  <span className="ratio-label">{key}</span>
+                </button>
+              )
+            })}
           </div>
 
           <Transport playingRef={playingRef} playheadRef={playheadRef} />
@@ -494,7 +568,7 @@ export default function App() {
             <summary>
               Frames
               <span className="muted">
-                {preview ? ` · ${frames} · 96px · ${preview.kb}KB` : ' · baking…'}
+                {preview ? ` · ${frames} · ${cellW}×${cellH} · ${preview.kb}KB` : ' · baking…'}
               </span>
             </summary>
             <div className="filmstrip">
@@ -691,7 +765,7 @@ export default function App() {
                 <p className="hint">
                   Downloaded sheet.png ({baked.width}×{baked.height} · {baked.kb}KB) and poster.png.
                 </p>
-                <pre>{cssSnippet(frames, frameSize, baked.cols, baked.rows)}</pre>
+                <pre>{cssSnippet(baked.frames, baked.cw, baked.ch, baked.cols, baked.rows)}</pre>
                 <button className="btn-ghost" onClick={copyCss}>
                   {copied ? 'Copied' : 'Copy CSS'}
                 </button>
