@@ -439,7 +439,7 @@ export default function App() {
       <header className="topbar">
         <div className="brand">
           <span className="brand-dot" />
-          flipbook
+          monolith
         </div>
         <button className="btn-primary" onClick={bake} disabled={!engine || busy}>
           {exportLabel}
