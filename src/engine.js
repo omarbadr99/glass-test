@@ -255,30 +255,9 @@ export class Engine {
     })
   }
 
-  // Sample a small downscale of the backdrop image for its average colour, used
-  // to tint the studio reflection so chrome harmonises with the scene.
-  _averageColor(image) {
-    const c = document.createElement('canvas')
-    c.width = c.height = 16
-    const x = c.getContext('2d')
-    x.drawImage(image, 0, 0, 16, 16)
-    const d = x.getImageData(0, 0, 16, 16).data
-    let r = 0,
-      g = 0,
-      b = 0
-    for (let i = 0; i < d.length; i += 4) {
-      r += d[i]
-      g += d[i + 1]
-      b += d[i + 2]
-    }
-    const n = d.length / 4
-    return new THREE.Color(r / n / 255, g / n / 255, b / n / 255)
-  }
-
   // A bright vertical studio gradient (sky → bright horizon line → dark ground)
   // as an equirect texture — the classic look that reads as polished chrome on a
-  // flat face, instead of a busy photo that looks like a dark window. Lightly
-  // tinted toward the scene so it harmonises with the backdrop.
+  // flat face. Used for color/transparent backdrops; lightly tinted to harmonise.
   _studioGradient(tint) {
     const c = document.createElement('canvas')
     c.width = 8
@@ -299,6 +278,35 @@ export class Engine {
     return tex
   }
 
+  // The actual scene composited over a bright studio gradient: chrome reflects a
+  // real, detailed mirror of the surroundings (so you see your reflection) but
+  // the gradient lifts the dark areas and adds the bright sky/horizon, so it
+  // reads as polished chrome instead of a dark window.
+  _sceneReflectionTexture(image) {
+    const c = document.createElement('canvas')
+    c.width = 1024
+    c.height = 512
+    const ctx = c.getContext('2d')
+    const g = ctx.createLinearGradient(0, 0, 0, 512)
+    g.addColorStop(0.0, '#eef4ff')
+    g.addColorStop(0.48, '#cdd8e8')
+    g.addColorStop(0.5, '#ffffff') // bright horizon
+    g.addColorStop(0.52, '#b7c1d0')
+    g.addColorStop(1.0, '#3b424f')
+    ctx.fillStyle = g
+    ctx.fillRect(0, 0, 1024, 512)
+    // brightened scene on top, semi-transparent so the gradient shows through
+    ctx.globalAlpha = 0.7
+    ctx.filter = 'brightness(1.3) contrast(1.05) saturate(1.1)'
+    ctx.drawImage(image, 0, 0, 1024, 512)
+    ctx.filter = 'none'
+    ctx.globalAlpha = 1
+    const tex = new THREE.CanvasTexture(c)
+    tex.mapping = THREE.EquirectangularReflectionMapping
+    tex.colorSpace = THREE.SRGBColorSpace
+    return tex
+  }
+
   // Rebuild the reflection probe the materials sample. Metals reflect a bright
   // studio gradient (tinted by the scene for an image backdrop, or by the chosen
   // colour) so they read as vibrant polished chrome rather than a dark window,
@@ -308,13 +316,15 @@ export class Engine {
     const bg = this.settings.background
     const trash = []
 
-    let tint
-    if (bg?.kind === 'image' && this._bgTexture?.image) tint = this._averageColor(this._bgTexture.image)
-    else if (bg?.kind === 'color') tint = new THREE.Color(bg.color)
-    else tint = new THREE.Color(0x3a3f48)
-    const grad = this._studioGradient(tint)
-    env.background = grad
-    trash.push(grad)
+    let envTex
+    if (bg?.kind === 'image' && this._bgTexture?.image) {
+      envTex = this._sceneReflectionTexture(this._bgTexture.image)
+    } else {
+      const tint = bg?.kind === 'color' ? new THREE.Color(bg.color) : new THREE.Color(0x3a3f48)
+      envTex = this._studioGradient(tint)
+    }
+    env.background = envTex
+    trash.push(envTex)
     trash.push(...addStudioPanels(env))
 
     // Captured from the origin (where the item sits); distance is expressed by
