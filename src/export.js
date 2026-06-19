@@ -30,7 +30,9 @@ export function recordVideo(engine, { width, height, durationMs, mime, fps = 60,
     engine.renderer.setSize(width, height, false)
 
     const stream = engine.renderer.domElement.captureStream(fps)
-    const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 12_000_000 })
+    // Scale bitrate with resolution so larger frames (up to 4K) stay sharp.
+    const bitrate = Math.min(48_000_000, Math.max(8_000_000, Math.round(width * height * 5)))
+    const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: bitrate })
     const chunks = []
     rec.ondataavailable = (e) => e.data.size && chunks.push(e.data)
     rec.onerror = (e) => reject(e.error || new Error('recording failed'))

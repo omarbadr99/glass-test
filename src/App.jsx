@@ -262,12 +262,20 @@ export default function App() {
   const videoTypes = useMemo(() => supportedVideoTypes(), [])
   const formats = useMemo(() => ['sheet', ...videoTypes.map((v) => v.format)], [videoTypes])
   const [format, setFormat] = useState('sheet')
+  // Sprite sheets are capped by the canvas size limit; video frames are encoded
+  // individually, so they can go up to 4K (long side).
+  const maxFrameSize = format === 'sheet' ? 1024 : 3840
 
   const [preview, setPreview] = useState(null) // { url, kb }
   const [baked, setBaked] = useState(null) // { format, ... }
   const [busy, setBusy] = useState(false)
   const [copied, setCopied] = useState(false)
   const [exportOpen, setExportOpen] = useState(false)
+
+  // Drop back under the sprite-sheet limit when switching to a sheet export.
+  useEffect(() => {
+    if (format === 'sheet') setFrameSize((s) => Math.min(s, 1024))
+  }, [format])
 
   // Create the engine and run the preview loop.
   useEffect(() => {
@@ -750,9 +758,9 @@ export default function App() {
             <Slider
               label="Frame size"
               value={frameSize}
-              display={`${frameSize}px`}
+              display={`${cellW}×${cellH}`}
               min={64}
-              max={1024}
+              max={maxFrameSize}
               step={64}
               onChange={setFrameSize}
             />
@@ -765,7 +773,7 @@ export default function App() {
                 ? grid.rows > 1
                   ? `Sharp & CSS-playable · ${grid.cols}×${grid.rows} grid sheet`
                   : 'Sharp & CSS-playable · single-row strip'
-                : 'Smallest & smooth · best for sharing'}
+                : `Smallest & smooth · up to 4K (${cellW}×${cellH})`}
             </p>
             <button className="btn-primary wide" onClick={bake} disabled={!engine || busy}>
               {busy ? exportLabel : format === 'sheet' ? 'Bake sheet + poster' : `Bake ${format}`}
