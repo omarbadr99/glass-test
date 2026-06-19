@@ -267,6 +267,7 @@ export default function App() {
   const [baked, setBaked] = useState(null) // { format, ... }
   const [busy, setBusy] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [exportOpen, setExportOpen] = useState(false)
 
   // Create the engine and run the preview loop.
   useEffect(() => {
@@ -492,8 +493,13 @@ export default function App() {
           <span className="brand-dot" />
           monolith
         </div>
-        <button className="btn-primary" onClick={bake} disabled={!engine || busy}>
-          {exportLabel}
+        <button
+          className={`btn-primary${exportOpen ? ' open' : ''}`}
+          onClick={() => setExportOpen((o) => !o)}
+          disabled={!engine}
+          aria-expanded={exportOpen}
+        >
+          Export
         </button>
       </header>
 
@@ -732,8 +738,13 @@ export default function App() {
               <Segmented options={LIGHT_MOTIONS} value={lightMotion} onChange={setLightMotion} />
             </div>
           </div>
+        </aside>
+      </div>
 
-          <div className="card">
+      {exportOpen && (
+        <>
+          <div className="popover-backdrop" onClick={() => setExportOpen(false)} />
+          <div className="export-popover" role="dialog" aria-label="Export options">
             <div className="card-title">Export</div>
             <Slider label="Frames" value={frames} min={8} max={96} step={4} onChange={setFrames} />
             <Slider
@@ -778,8 +789,8 @@ export default function App() {
             )}
             {baked?.format === 'error' && <p className="error result">{baked.message}</p>}
           </div>
-        </aside>
-      </div>
+        </>
+      )}
     </div>
   )
 }

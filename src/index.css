@@ -615,6 +615,45 @@ input[type='range']::-moz-range-thumb {
   cursor: default;
 }
 
+.btn-primary.open {
+  opacity: 0.9;
+}
+
+/* export popover */
+
+.popover-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+}
+
+.export-popover {
+  position: fixed;
+  top: 58px;
+  right: 16px;
+  z-index: 50;
+  width: 320px;
+  max-height: calc(100vh - 74px);
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.18);
+  padding: 16px;
+  animation: pop 0.14s ease;
+}
+
+@keyframes pop {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 .btn-primary.wide {
   width: 100%;
   padding: 11px;
