@@ -9,7 +9,7 @@ import {
   computeGrid,
 } from './engine'
 import { PRESETS, shapesFromSVG } from './shapes'
-import { supportedVideoTypes, recordVideo, downloadBlob } from './export'
+import { supportedVideoTypes, recordVideo, encodeVideo, webCodecsAvailable, downloadBlob } from './export'
 
 const LOOP_SECONDS = 2
 
@@ -260,7 +260,13 @@ export default function App() {
   )
 
   const videoTypes = useMemo(() => supportedVideoTypes(), [])
-  const formats = useMemo(() => ['sheet', ...videoTypes.map((v) => v.format)], [videoTypes])
+  // With WebCodecs we can produce standard mp4 + webm; otherwise fall back to
+  // whatever MediaRecorder supports.
+  const hasWebCodecs = useMemo(() => webCodecsAvailable(), [])
+  const formats = useMemo(
+    () => (hasWebCodecs ? ['sheet', 'mp4', 'webm'] : ['sheet', ...videoTypes.map((v) => v.format)]),
+    [hasWebCodecs, videoTypes]
+  )
   const [format, setFormat] = useState('sheet')
   // Sprite sheets are capped by the canvas size limit; video frames are encoded
   // individually, so they can go up to 4K (long side).
@@ -454,20 +460,35 @@ export default function App() {
   }
 
   const bakeVideo = async () => {
-    const type = videoTypes.find((v) => v.format === format)
-    if (!type) return
     setBusy(true)
     pausedRef.current = true
     try {
-      const blob = await recordVideo(engine, {
-        width: cellW,
-        height: cellH,
-        durationMs: LOOP_SECONDS * 1000,
-        mime: type.mime,
-        render: (t) => engine.render(t),
-      })
-      downloadBlob(blob, `loop.${type.format}`)
-      setBaked({ format: 'video', ext: type.format, kb: Math.round(blob.size / 1024) })
+      let blob
+      let ext
+      if (hasWebCodecs) {
+        const r = await encodeVideo(engine, {
+          format,
+          width: cellW,
+          height: cellH,
+          durationSec: LOOP_SECONDS,
+          render: (t) => engine.render(t),
+        })
+        blob = r.blob
+        ext = r.ext
+      } else {
+        const type = videoTypes.find((v) => v.format === format)
+        if (!type) throw new Error('No video encoder available in this browser.')
+        blob = await recordVideo(engine, {
+          width: cellW,
+          height: cellH,
+          durationMs: LOOP_SECONDS * 1000,
+          mime: type.mime,
+          render: (t) => engine.render(t),
+        })
+        ext = type.format
+      }
+      downloadBlob(blob, `loop.${ext}`)
+      setBaked({ format: 'video', ext, kb: Math.round(blob.size / 1024), wanted: format })
     } catch (err) {
       setBaked({ format: 'error', message: err.message })
     } finally {
@@ -793,6 +814,9 @@ export default function App() {
             {baked?.format === 'video' && (
               <p className="hint result">
                 Downloaded loop.{baked.ext} ({baked.kb}KB) — a {LOOP_SECONDS}s seamless loop.
+                {baked.wanted && baked.wanted !== baked.ext
+                  ? ` (mp4 isn't supported at this size, so it was saved as ${baked.ext}.)`
+                  : ''}
               </p>
             )}
             {baked?.format === 'error' && <p className="error result">{baked.message}</p>}

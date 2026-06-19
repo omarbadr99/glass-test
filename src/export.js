@@ -1,17 +1,115 @@
-// Shareable-export helpers. Batch 1 covers the video path (built-in
-// MediaRecorder — no extra dependencies); GIF and animated PNG land in batch 2.
+// Shareable-export helpers: deterministic video via WebCodecs + a muxer
+// (standard, broadly-playable mp4/webm, up to 4K), with MediaRecorder as a
+// fallback for browsers without WebCodecs.
 
-// MP4 (H.264) is the most universally shareable container but isn't encodable
-// everywhere, so we probe and fall back to WebM. Returns one entry per distinct
-// output format, in order of preference, each the browser actually supports.
+import { Muxer as Mp4Muxer, ArrayBufferTarget as Mp4Target } from 'mp4-muxer'
+import { Muxer as WebmMuxer, ArrayBufferTarget as WebmTarget } from 'webm-muxer'
+
+export function webCodecsAvailable() {
+  return typeof VideoEncoder !== 'undefined' && typeof VideoFrame !== 'undefined'
+}
+
+function bitrateFor(width, height) {
+  return Math.min(40_000_000, Math.max(6_000_000, Math.round(width * height * 3)))
+}
+
+// Find an encoder config the browser actually supports for this size. For mp4
+// we try H.264 from high level down; if none fits (e.g. square 4K exceeds H.264
+// limits) we fall back to VP9/VP8 in webm, which handle any size.
+async function pickConfig(format, width, height, fps) {
+  const bitrate = bitrateFor(width, height)
+  const firstSupported = async (codecs) => {
+    for (const codec of codecs) {
+      try {
+        const r = await VideoEncoder.isConfigSupported({ codec, width, height, bitrate, framerate: fps })
+        if (r.supported) return codec
+      } catch {
+        /* keep trying */
+      }
+    }
+    return null
+  }
+  if (format === 'mp4') {
+    const avc = await firstSupported(['avc1.640034', 'avc1.640033', 'avc1.640028', 'avc1.4d4028'])
+    if (avc) return { container: 'mp4', muxerCodec: 'avc', codec: avc, ext: 'mp4', bitrate }
+  }
+  const vp9 = await firstSupported(['vp09.00.10.08', 'vp09.00.41.08'])
+  if (vp9) return { container: 'webm', muxerCodec: 'V_VP9', codec: vp9, ext: 'webm', bitrate }
+  const vp8 = await firstSupported(['vp8'])
+  if (vp8) return { container: 'webm', muxerCodec: 'V_VP8', codec: 'vp8', ext: 'webm', bitrate }
+  return null
+}
+
+// Render `durationSec * fps` frames deterministically and encode them into one
+// seamless loop. Returns { blob, ext } — ext may differ from the requested
+// format if it had to fall back (e.g. mp4 → webm at an unsupported size).
+export async function encodeVideo(engine, { format, width, height, render, fps = 30, durationSec = 2 }) {
+  const cfg = await pickConfig(format, width, height, fps)
+  if (!cfg) throw new Error('No supported video encoder for this size — try a smaller frame size.')
+
+  engine.renderer.setPixelRatio(1)
+  engine.renderer.setSize(width, height, false)
+
+  let target
+  let muxer
+  if (cfg.container === 'mp4') {
+    target = new Mp4Target()
+    muxer = new Mp4Muxer({
+      target,
+      video: { codec: cfg.muxerCodec, width, height },
+      fastStart: 'in-memory',
+    })
+  } else {
+    target = new WebmTarget()
+    muxer = new WebmMuxer({ target, video: { codec: cfg.muxerCodec, width, height, frameRate: fps } })
+  }
+
+  let encodeError = null
+  const encoder = new VideoEncoder({
+    output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
+    error: (e) => {
+      encodeError = e
+    },
+  })
+  const config = { codec: cfg.codec, width, height, bitrate: cfg.bitrate, framerate: fps }
+  if (cfg.container === 'mp4') config.avc = { format: 'avc' } // AVCC for mp4-muxer
+  encoder.configure(config)
+
+  // Copy each GL frame through a 2D canvas (proven reliable) before wrapping it
+  // in a VideoFrame for the encoder.
+  const cap = document.createElement('canvas')
+  cap.width = width
+  cap.height = height
+  const cctx = cap.getContext('2d')
+
+  const total = Math.round(durationSec * fps)
+  const usPerFrame = 1e6 / fps
+  for (let i = 0; i < total; i++) {
+    if (encodeError) throw encodeError
+    while (encoder.encodeQueueSize > 2) await new Promise((r) => setTimeout(r))
+    render(i / total)
+    cctx.drawImage(engine.renderer.domElement, 0, 0, width, height)
+    const frame = new VideoFrame(cap, {
+      timestamp: Math.round(i * usPerFrame),
+      duration: Math.round(usPerFrame),
+    })
+    encoder.encode(frame, { keyFrame: i % fps === 0 })
+    frame.close()
+  }
+  await encoder.flush()
+  if (encodeError) throw encodeError
+  muxer.finalize()
+
+  const type = cfg.container === 'mp4' ? 'video/mp4' : 'video/webm'
+  return { blob: new Blob([target.buffer], { type }), ext: cfg.ext }
+}
+
+// ---- MediaRecorder fallback (older browsers without WebCodecs) ----
+
 export function supportedVideoTypes() {
   if (typeof MediaRecorder === 'undefined') return []
-  // Prefer un-pinned codec strings so the browser can pick an H.264 level that
-  // supports large frames (a fixed low level rejects 4K). Generic first.
   const candidates = [
     { format: 'mp4', mime: 'video/mp4' },
-    { format: 'mp4', mime: 'video/mp4;codecs=avc1' },
-    { format: 'mp4', mime: 'video/mp4;codecs=avc1.42E01E' },
     { format: 'webm', mime: 'video/webm;codecs=vp9' },
     { format: 'webm', mime: 'video/webm;codecs=vp8' },
     { format: 'webm', mime: 'video/webm' },
@@ -24,37 +122,22 @@ export function supportedVideoTypes() {
   return out
 }
 
-// Records one seamless loop of the scene into a video Blob. The caller's
-// `render(t)` drives the engine for each frame (t in [0, 1)); the canvas is
-// captured as a stream while we step it in real time. Always opaque — video
-// can't carry transparency, hence the always-baked-in background.
 export function recordVideo(engine, { width, height, durationMs, mime, fps = 60, render }) {
   return new Promise((resolve, reject) => {
     engine.renderer.setPixelRatio(1)
     engine.renderer.setSize(width, height, false)
-
     const stream = engine.renderer.domElement.captureStream(fps)
-    // Scale bitrate with resolution but keep it within encoder/level limits.
-    const bitrate = Math.min(24_000_000, Math.max(8_000_000, Math.round(width * height * 3)))
-
-    // Some encoders reject a given bitrate at large sizes; fall back to letting
-    // the browser choose one.
     let rec
     try {
-      rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: bitrate })
-    } catch {
-      try {
-        rec = new MediaRecorder(stream, { mimeType: mime })
-      } catch (e) {
-        reject(e)
-        return
-      }
+      rec = new MediaRecorder(stream, { mimeType: mime })
+    } catch (e) {
+      reject(e)
+      return
     }
     const chunks = []
     rec.ondataavailable = (e) => e.data.size && chunks.push(e.data)
     rec.onerror = (e) => reject(e.error || new Error('recording failed'))
     rec.onstop = () => resolve(new Blob(chunks, { type: mime.split(';')[0] }))
-
     const start = performance.now()
     const step = (now) => {
       const elapsed = now - start
