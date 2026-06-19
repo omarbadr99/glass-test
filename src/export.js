@@ -6,7 +6,11 @@
 // output format, in order of preference, each the browser actually supports.
 export function supportedVideoTypes() {
   if (typeof MediaRecorder === 'undefined') return []
+  // Prefer un-pinned codec strings so the browser can pick an H.264 level that
+  // supports large frames (a fixed low level rejects 4K). Generic first.
   const candidates = [
+    { format: 'mp4', mime: 'video/mp4' },
+    { format: 'mp4', mime: 'video/mp4;codecs=avc1' },
     { format: 'mp4', mime: 'video/mp4;codecs=avc1.42E01E' },
     { format: 'webm', mime: 'video/webm;codecs=vp9' },
     { format: 'webm', mime: 'video/webm;codecs=vp8' },
@@ -30,9 +34,22 @@ export function recordVideo(engine, { width, height, durationMs, mime, fps = 60,
     engine.renderer.setSize(width, height, false)
 
     const stream = engine.renderer.domElement.captureStream(fps)
-    // Scale bitrate with resolution so larger frames (up to 4K) stay sharp.
-    const bitrate = Math.min(48_000_000, Math.max(8_000_000, Math.round(width * height * 5)))
-    const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: bitrate })
+    // Scale bitrate with resolution but keep it within encoder/level limits.
+    const bitrate = Math.min(24_000_000, Math.max(8_000_000, Math.round(width * height * 3)))
+
+    // Some encoders reject a given bitrate at large sizes; fall back to letting
+    // the browser choose one.
+    let rec
+    try {
+      rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: bitrate })
+    } catch {
+      try {
+        rec = new MediaRecorder(stream, { mimeType: mime })
+      } catch (e) {
+        reject(e)
+        return
+      }
+    }
     const chunks = []
     rec.ondataavailable = (e) => e.data.size && chunks.push(e.data)
     rec.onerror = (e) => reject(e.error || new Error('recording failed'))
@@ -45,7 +62,12 @@ export function recordVideo(engine, { width, height, durationMs, mime, fps = 60,
       if (elapsed >= durationMs) rec.stop()
       else requestAnimationFrame(step)
     }
-    rec.start()
+    try {
+      rec.start()
+    } catch (e) {
+      reject(e)
+      return
+    }
     requestAnimationFrame(step)
   })
 }
