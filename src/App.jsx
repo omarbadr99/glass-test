@@ -9,7 +9,15 @@ import {
   computeGrid,
 } from './engine'
 import { PRESETS, shapesFromSVG } from './shapes'
-import { supportedVideoTypes, recordVideo, encodeVideo, webCodecsAvailable, downloadBlob } from './export'
+import {
+  supportedVideoTypes,
+  recordVideo,
+  encodeVideo,
+  encodeGif,
+  encodeLottie,
+  webCodecsAvailable,
+  downloadBlob,
+} from './export'
 
 const LOOP_SECONDS = 2
 
@@ -263,14 +271,15 @@ export default function App() {
   // With WebCodecs we can produce standard mp4 + webm; otherwise fall back to
   // whatever MediaRecorder supports.
   const hasWebCodecs = useMemo(() => webCodecsAvailable(), [])
-  const formats = useMemo(
-    () => (hasWebCodecs ? ['sheet', 'mp4', 'webm'] : ['sheet', ...videoTypes.map((v) => v.format)]),
-    [hasWebCodecs, videoTypes]
-  )
+  const formats = useMemo(() => {
+    const video = hasWebCodecs ? ['mp4', 'webm'] : videoTypes.map((v) => v.format)
+    return ['sheet', 'gif', ...video, 'json']
+  }, [hasWebCodecs, videoTypes])
   const [format, setFormat] = useState('sheet')
-  // Sprite sheets are capped by the canvas size limit; video frames are encoded
-  // individually, so they can go up to 4K (long side).
-  const maxFrameSize = format === 'sheet' ? 1024 : 3840
+  // Only video frames are encoded individually (up to 4K); sheet/gif/json share
+  // a canvas, so they stay within the canvas size limit.
+  const isVideoFormat = format === 'mp4' || format === 'webm'
+  const maxFrameSize = isVideoFormat ? 3840 : 1024
 
   const [preview, setPreview] = useState(null) // { url, kb }
   const [baked, setBaked] = useState(null) // { format, ... }
@@ -278,9 +287,9 @@ export default function App() {
   const [copied, setCopied] = useState(false)
   const [exportOpen, setExportOpen] = useState(false)
 
-  // Drop back under the sprite-sheet limit when switching to a sheet export.
+  // Drop back under the canvas-size limit for non-video exports.
   useEffect(() => {
-    if (format === 'sheet') setFrameSize((s) => Math.min(s, 1024))
+    if (format !== 'mp4' && format !== 'webm') setFrameSize((s) => Math.min(s, 1024))
   }, [format])
 
   // Create the engine and run the preview loop.
@@ -498,9 +507,54 @@ export default function App() {
     }
   }
 
+  const bakeGif = async () => {
+    setBusy(true)
+    pausedRef.current = true
+    try {
+      const blob = await encodeGif(engine, {
+        width: cellW,
+        height: cellH,
+        frames,
+        durationSec: LOOP_SECONDS,
+        transparent: bgKind === 'transparent',
+      })
+      downloadBlob(blob, 'loop.gif')
+      setBaked({ format: 'gif', kb: Math.round(blob.size / 1024) })
+    } catch (err) {
+      setBaked({ format: 'error', message: err.message })
+    } finally {
+      pausedRef.current = false
+      if (engine.viewW) engine.setView(engine.viewW, engine.viewH)
+      setBusy(false)
+    }
+  }
+
+  const bakeJson = async () => {
+    setBusy(true)
+    pausedRef.current = true
+    try {
+      const blob = await encodeLottie(engine, {
+        width: cellW,
+        height: cellH,
+        frames,
+        durationSec: LOOP_SECONDS,
+      })
+      downloadBlob(blob, 'monolith.json')
+      setBaked({ format: 'json', kb: Math.round(blob.size / 1024) })
+    } catch (err) {
+      setBaked({ format: 'error', message: err.message })
+    } finally {
+      pausedRef.current = false
+      if (engine.viewW) engine.setView(engine.viewW, engine.viewH)
+      setBusy(false)
+    }
+  }
+
   const bake = () => {
     if (busy || !engine) return
     if (format === 'sheet') bakeSheet()
+    else if (format === 'gif') bakeGif()
+    else if (format === 'json') bakeJson()
     else bakeVideo()
   }
 
@@ -513,7 +567,22 @@ export default function App() {
     })
   }
 
-  const exportLabel = busy ? (format === 'sheet' ? 'Baking…' : 'Recording…') : 'Export'
+  const FORMAT_VERB = {
+    sheet: 'Bake sheet + poster',
+    gif: 'Bake GIF',
+    json: 'Bake Lottie JSON',
+    mp4: 'Bake mp4',
+    webm: 'Bake webm',
+  }
+  const bakeBtnLabel = busy
+    ? format === 'sheet'
+      ? 'Baking…'
+      : format === 'gif'
+        ? 'Rendering GIF…'
+        : format === 'json'
+          ? 'Building JSON…'
+          : 'Encoding…'
+    : FORMAT_VERB[format] || `Bake ${format}`
 
   return (
     <div className="app">
@@ -794,10 +863,14 @@ export default function App() {
                 ? grid.rows > 1
                   ? `Sharp & CSS-playable · ${grid.cols}×${grid.rows} grid sheet`
                   : 'Sharp & CSS-playable · single-row strip'
-                : `Smallest & smooth · up to 4K (${cellW}×${cellH})`}
+                : format === 'gif'
+                  ? `Animated GIF · ${bgKind === 'transparent' ? 'transparent · ' : ''}loops anywhere`
+                  : format === 'json'
+                    ? 'Lottie JSON · drop straight into Framer'
+                    : `Smallest & smooth · up to 4K (${cellW}×${cellH})`}
             </p>
             <button className="btn-primary wide" onClick={bake} disabled={!engine || busy}>
-              {busy ? exportLabel : format === 'sheet' ? 'Bake sheet + poster' : `Bake ${format}`}
+              {bakeBtnLabel}
             </button>
 
             {baked?.format === 'sheet' && (
@@ -817,6 +890,15 @@ export default function App() {
                 {baked.wanted && baked.wanted !== baked.ext
                   ? ` (mp4 isn't supported at this size, so it was saved as ${baked.ext}.)`
                   : ''}
+              </p>
+            )}
+            {baked?.format === 'gif' && (
+              <p className="hint result">Downloaded loop.gif ({baked.kb}KB) — animated, loops forever.</p>
+            )}
+            {baked?.format === 'json' && (
+              <p className="hint result">
+                Downloaded monolith.json ({baked.kb}KB) — a Lottie. In Framer: Insert → Lottie → upload
+                this file.
               </p>
             )}
             {baked?.format === 'error' && <p className="error result">{baked.message}</p>}

@@ -4,6 +4,7 @@
 
 import { Muxer as Mp4Muxer, ArrayBufferTarget as Mp4Target } from 'mp4-muxer'
 import { Muxer as WebmMuxer, ArrayBufferTarget as WebmTarget } from 'webm-muxer'
+import { GIFEncoder, quantize, applyPalette } from 'gifenc'
 
 export function webCodecsAvailable() {
   return typeof VideoEncoder !== 'undefined' && typeof VideoFrame !== 'undefined'
@@ -153,6 +154,98 @@ export function recordVideo(engine, { width, height, durationMs, mime, fps = 60,
     }
     requestAnimationFrame(step)
   })
+}
+
+// ---- frame capture (shared by gif / lottie) ----
+
+// Render `n` frames at width×height (2x supersampled, downscaled for clean
+// edges) into a reusable 2D canvas and hand each to `onFrame`. Restores the
+// live view afterward.
+async function captureFrames(engine, width, height, n, onFrame) {
+  engine.renderer.setPixelRatio(1)
+  engine.renderer.setSize(width * 2, height * 2, false)
+  const cap = document.createElement('canvas')
+  cap.width = width
+  cap.height = height
+  const ctx = cap.getContext('2d')
+  ctx.imageSmoothingQuality = 'high'
+  for (let i = 0; i < n; i++) {
+    engine.render(i / n)
+    ctx.clearRect(0, 0, width, height)
+    ctx.drawImage(engine.renderer.domElement, 0, 0, width * 2, height * 2, 0, 0, width, height)
+    await onFrame(cap, ctx, i)
+    if ((i & 7) === 0) await new Promise((r) => setTimeout(r)) // keep UI responsive
+  }
+  if (engine.viewW) engine.setView(engine.viewW, engine.viewH)
+}
+
+// ---- animated GIF ----
+
+export async function encodeGif(engine, { width, height, frames, durationSec = 2, transparent = false }) {
+  const gif = GIFEncoder()
+  const delay = Math.round((durationSec * 1000) / frames)
+  const format = transparent ? 'rgba4444' : 'rgb565'
+  await captureFrames(engine, width, height, frames, (cap, ctx) => {
+    const { data } = ctx.getImageData(0, 0, width, height)
+    const palette = quantize(data, 256, { format, oneBitAlpha: transparent })
+    const index = applyPalette(data, palette, format)
+    gif.writeFrame(index, width, height, {
+      palette,
+      delay,
+      repeat: 0, // loop forever
+      transparent,
+      dispose: transparent ? 2 : -1,
+    })
+  })
+  gif.finish()
+  return new Blob([gif.bytes()], { type: 'image/gif' })
+}
+
+// ---- Lottie JSON (image-sequence flipbook; plays in Framer / lottie-web) ----
+
+function buildLottie(w, h, images, fps) {
+  const n = images.length
+  return {
+    v: '5.9.0',
+    fr: fps,
+    ip: 0,
+    op: n,
+    w,
+    h,
+    nm: 'monolith',
+    ddd: 0,
+    assets: images.map((p, i) => ({ id: `image_${i}`, w, h, u: '', p, e: 1 })),
+    // One image layer per frame, each visible for a single frame.
+    layers: images.map((_, i) => ({
+      ddd: 0,
+      ind: i + 1,
+      ty: 2,
+      nm: `frame_${i}`,
+      refId: `image_${i}`,
+      sr: 1,
+      ks: {
+        o: { a: 0, k: 100 },
+        r: { a: 0, k: 0 },
+        p: { a: 0, k: [w / 2, h / 2, 0] },
+        a: { a: 0, k: [w / 2, h / 2, 0] },
+        s: { a: 0, k: [100, 100, 100] },
+      },
+      ao: 0,
+      ip: i,
+      op: i + 1,
+      st: i,
+      bm: 0,
+    })),
+  }
+}
+
+export async function encodeLottie(engine, { width, height, frames, durationSec = 2 }) {
+  const images = []
+  await captureFrames(engine, width, height, frames, (cap) => {
+    images.push(cap.toDataURL('image/png'))
+  })
+  const json = buildLottie(width, height, images, frames / durationSec)
+  return new Blob([JSON.stringify(json)], { type: 'application/json' })
 }
 
 export function downloadBlob(blob, filename) {
